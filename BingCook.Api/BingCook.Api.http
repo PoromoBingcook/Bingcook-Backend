@@ -1,0 +1,23 @@
+@BingCook.Api_HostAddress = http://localhost:5115
+
+POST {{BingCook.Api_HostAddress}}/api/auth/register
+Content-Type: application/json
+Accept: application/json
+
+{
+  "fullName": "Jane Cook",
+  "email": "jane@example.com",
+  "phone": "+84901234567",
+  "password": "Password123"
+}
+
+###
+
+POST {{BingCook.Api_HostAddress}}/api/auth/login
+Content-Type: application/json
+Accept: application/json
+
+{
+  "identity": "jane@example.com",
+  "password": "Password123"
+}
