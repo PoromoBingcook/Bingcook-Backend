@@ -24,6 +24,7 @@ builder.Services.AddSingleton(_ =>
         ?? throw new InvalidOperationException("DefaultConnection is missing.")));
 
 builder.Services.AddScoped<IUserRepository, PostgresUserRepository>();
+builder.Services.AddScoped<IProductRepository, PostgresProductRepository>();
 builder.Services.AddScoped<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IAuthService, AuthService>();
