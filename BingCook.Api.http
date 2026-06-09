@@ -21,3 +21,9 @@ Accept: application/json
   "identity": "jane@example.com",
   "password": "Password123"
 }
+
+###
+
+POST {{BingCook.Api_HostAddress}}/api/auth/logout
+Authorization: Bearer {{authToken}}
+Accept: application/json

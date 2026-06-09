@@ -21,7 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\BingCook.Api\BingCook.Api.csproj" />
+    <ProjectReference Include="..\BingCook.Api.csproj" />
   </ItemGroup>
 
 </Project>

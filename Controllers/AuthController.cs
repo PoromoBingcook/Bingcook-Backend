@@ -1,5 +1,6 @@
 using BingCook.Api.Dtos.Auth;
 using BingCook.Api.Services;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace BingCook.Api.Controllers;
@@ -51,5 +52,13 @@ public sealed class AuthController : ControllerBase
             AuthOutcomeStatus.Unauthorized => Unauthorized(new { message = result.Error }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
+    }
+
+    [Authorize]
+    [HttpPost("logout")]
+    public async Task<IActionResult> Logout(CancellationToken cancellationToken)
+    {
+        await _authService.LogoutAsync(cancellationToken);
+        return NoContent();
     }
 }

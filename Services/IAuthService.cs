@@ -13,4 +13,6 @@ public interface IAuthService
         string identity,
         string password,
         CancellationToken cancellationToken);
+
+    Task LogoutAsync(CancellationToken cancellationToken);
 }

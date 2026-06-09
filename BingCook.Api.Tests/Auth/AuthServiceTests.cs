@@ -128,6 +128,17 @@ public sealed class AuthServiceTests
         Assert.Equal("Invalid email/phone or password.", result.Error);
     }
 
+    [Fact]
+    public async Task LogoutAsync_completes_without_changing_users()
+    {
+        var repository = new FakeUserRepository();
+        var service = CreateService(repository, new BCryptPasswordHasher());
+
+        await service.LogoutAsync(CancellationToken.None);
+
+        Assert.Empty(repository.Users);
+    }
+
     private static AuthService CreateService(
         IUserRepository repository,
         IPasswordHasher passwordHasher)

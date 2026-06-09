@@ -76,6 +76,11 @@ public sealed class AuthService : IAuthService
         return AuthOutcome.Success(CreateResponse(user));
     }
 
+    public Task LogoutAsync(CancellationToken cancellationToken)
+    {
+        return Task.CompletedTask;
+    }
+
     private AuthResponse CreateResponse(UserAccount user)
     {
         var token = _jwtTokenService.CreateToken(user);

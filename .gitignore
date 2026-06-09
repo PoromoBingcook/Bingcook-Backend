@@ -44,5 +44,3 @@ secrets.json
 *.nupkg
 packages/
 .nuget/
-
-BingCook.Api.Tests/
