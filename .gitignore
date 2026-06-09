@@ -1,0 +1,48 @@
+# Build output
+bin/
+obj/
+**/bin/
+**/obj/
+
+
+# Test and coverage output
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+coverage.cobertura.xml
+
+# Visual Studio / Rider / VS Code local state
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+*.cache
+*.pid
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local secrets / environment overrides
+.env
+.env.*
+*.local.json
+appsettings.*.local.json
+secrets.json
+
+# NuGet
+*.nupkg
+packages/
+.nuget/
+
+BingCook.Api.Tests/

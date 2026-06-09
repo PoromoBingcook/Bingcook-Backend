@@ -40,7 +40,7 @@ public sealed class PostgresUserRepository : IUserRepository
     {
         const string sql = """
             INSERT INTO "User" (fullname, email, phone, password, role)
-            VALUES (@fullName, @email, @phone, @passwordHash, @role)
+            VALUES (@fullName, @email, @phone, @passwordHash, @role::user_role)
             RETURNING
                 id,
                 fullname,
