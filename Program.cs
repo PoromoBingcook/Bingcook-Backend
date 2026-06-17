@@ -13,6 +13,8 @@ builder.Services.AddSwaggerGen();
 
 builder.Services.Configure<JwtOptions>(
     builder.Configuration.GetSection(JwtOptions.SectionName));
+builder.Services.Configure<WelcomeEmailOptions>(
+    builder.Configuration.GetSection(WelcomeEmailOptions.SectionName));
 
 var jwtOptions = builder.Configuration
     .GetSection(JwtOptions.SectionName)
@@ -27,6 +29,7 @@ builder.Services.AddScoped<IUserRepository, PostgresUserRepository>();
 builder.Services.AddScoped<IProductRepository, PostgresProductRepository>();
 builder.Services.AddScoped<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
+builder.Services.AddScoped<IWelcomeEmailSender, SmtpWelcomeEmailSender>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 
 builder.Services

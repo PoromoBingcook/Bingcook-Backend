@@ -12,6 +12,7 @@ public sealed record ProductListItem(
     double Rating,
     int ReviewCount,
     string Status,
+    bool IsAvailable,
     bool HasWifi,
     bool HasPool,
     bool HasParking,
