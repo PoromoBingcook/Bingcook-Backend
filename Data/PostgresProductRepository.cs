@@ -68,20 +68,23 @@ public sealed class PostgresProductRepository : IProductRepository
                 WHERE rv.propertyid = p.id
             ) review_summary ON TRUE
             LEFT JOIN LATERAL (
-                SELECT COUNT(*) AS availablecount
+                SELECT COALESCE(SUM(
+                    GREATEST(
+                        COALESCE(r.totalroom, 1) - COALESCE(booked.bookedrooms, 0),
+                        0)), 0) AS availablecount
                 FROM room r
+                LEFT JOIN LATERAL (
+                    SELECT COALESCE(SUM(COALESCE(b.roomquantity, 1)), 0)::integer AS bookedrooms
+                    FROM booking b
+                    WHERE b.roomid = r.id
+                      AND (@checkIn IS NULL OR @checkOut IS NULL
+                           OR (b.checkin < @checkOut AND b.checkout > @checkIn))
+                      AND b.status::text NOT IN ('Cancelled', 'Canceled')
+                ) booked ON TRUE
                 WHERE r.propertyid = p.id
                   AND (@guests IS NULL OR r.capacity >= @guests)
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM booking b
-                      WHERE b.roomid = r.id
-                        AND (@checkIn IS NULL OR @checkOut IS NULL
-                             OR (b.checkin < @checkOut AND b.checkout > @checkIn))
-                        AND b.status::text NOT IN ('Cancelled', 'Canceled')
-                  )
             ) available_room ON TRUE
-            WHERE p.status = 'Active'::property_status
+            WHERE p.status::text = 'Active'
             """);
 
         await using var command = _dataSource.CreateCommand();
@@ -180,21 +183,24 @@ public sealed class PostgresProductRepository : IProductRepository
                 WHERE rv.propertyid = p.id
             ) review_summary ON TRUE
             LEFT JOIN LATERAL (
-                SELECT COUNT(*) AS availablecount
+                SELECT COALESCE(SUM(
+                    GREATEST(
+                        COALESCE(r.totalroom, 1) - COALESCE(booked.bookedrooms, 0),
+                        0)), 0) AS availablecount
                 FROM room r
+                LEFT JOIN LATERAL (
+                    SELECT COALESCE(SUM(COALESCE(b.roomquantity, 1)), 0)::integer AS bookedrooms
+                    FROM booking b
+                    WHERE b.roomid = r.id
+                      AND (@checkIn IS NULL OR @checkOut IS NULL
+                           OR (b.checkin < @checkOut AND b.checkout > @checkIn))
+                      AND b.status::text NOT IN ('Cancelled', 'Canceled')
+                ) booked ON TRUE
                 WHERE r.propertyid = p.id
                   AND (@guests IS NULL OR r.capacity >= @guests)
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM booking b
-                      WHERE b.roomid = r.id
-                        AND (@checkIn IS NULL OR @checkOut IS NULL
-                             OR (b.checkin < @checkOut AND b.checkout > @checkIn))
-                        AND b.status::text NOT IN ('Cancelled', 'Canceled')
-                  )
             ) available_room ON TRUE
             WHERE p.id = @id
-              AND p.status = 'Active'::property_status;
+              AND p.status::text = 'Active';
             """;
 
         await using var command = _dataSource.CreateCommand(sql);
@@ -243,8 +249,19 @@ public sealed class PostgresProductRepository : IProductRepository
                 r.name,
                 r.capacity,
                 r.price,
-                image.imageurl
+                image.imageurl,
+                GREATEST(
+                    COALESCE(r.totalroom, 1) - COALESCE(booked.bookedrooms, 0),
+                    0) AS availablerooms
             FROM room r
+            LEFT JOIN LATERAL (
+                SELECT COALESCE(SUM(COALESCE(b.roomquantity, 1)), 0)::integer AS bookedrooms
+                FROM booking b
+                WHERE b.roomid = r.id
+                  AND (@checkIn IS NULL OR @checkOut IS NULL
+                       OR (b.checkin < @checkOut AND b.checkout > @checkIn))
+                  AND b.status::text NOT IN ('Cancelled', 'Canceled')
+            ) booked ON TRUE
             LEFT JOIN LATERAL (
                 SELECT ri.imageurl
                 FROM roomimage ri
@@ -254,14 +271,9 @@ public sealed class PostgresProductRepository : IProductRepository
             ) image ON TRUE
             WHERE r.propertyid = @propertyId
               AND (@guests IS NULL OR r.capacity >= @guests)
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM booking b
-                  WHERE b.roomid = r.id
-                    AND (@checkIn IS NULL OR @checkOut IS NULL
-                         OR (b.checkin < @checkOut AND b.checkout > @checkIn))
-                    AND b.status::text NOT IN ('Cancelled', 'Canceled')
-              )
+              AND GREATEST(
+                  COALESCE(r.totalroom, 1) - COALESCE(booked.bookedrooms, 0),
+                  0) > 0
             ORDER BY r.price, r.name;
             """;
 

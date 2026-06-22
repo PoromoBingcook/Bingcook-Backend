@@ -1,0 +1,70 @@
+namespace BingCook.Api.Models;
+
+public sealed record BookingCheckoutCommand(
+    Guid UserId,
+    Guid BookingId,
+    string PaymentMethod,
+    string? CustomerName,
+    string? CustomerEmail,
+    string? CustomerPhone,
+    string? IdentityNumber);
+
+public sealed record BookingCheckoutQuote(
+    Guid BookingId,
+    Guid UserId,
+    Guid PropertyId,
+    string PropertyName,
+    Guid RoomId,
+    string RoomName,
+    DateOnly CheckIn,
+    DateOnly CheckOut,
+    int Guest,
+    int RoomQuantity,
+    decimal TotalPrice,
+    string Status);
+
+public sealed record CompleteBookingCheckoutCommand(
+    Guid UserId,
+    Guid BookingId,
+    string BookingStatus,
+    string PaymentMethod,
+    string PaymentStatus,
+    string? Provider,
+    decimal Amount,
+    string? TransactionCode,
+    string? CheckoutUrl,
+    string? QrCode,
+    string? CustomerName,
+    string? CustomerEmail,
+    string? CustomerPhone,
+    string? IdentityNumber);
+
+public sealed record CreateOnlinePaymentLinkCommand(
+    Guid BookingId,
+    string PropertyName,
+    string RoomName,
+    decimal Amount);
+
+public sealed record OnlinePaymentLink(
+    long OrderCode,
+    string PaymentLinkId,
+    string CheckoutUrl,
+    string? QrCode,
+    string Status);
+
+public sealed record BookingCheckoutResult(
+    Guid BookingId,
+    string BookingStatus,
+    string PaymentMethod,
+    string PaymentStatus,
+    decimal Amount,
+    string? TransactionCode,
+    string? PaymentLinkId,
+    string? CheckoutUrl,
+    string? QrCode,
+    string Message);
+
+public sealed record PayOSPaymentUpdateCommand(
+    string TransactionCode,
+    string PaymentStatus,
+    string BookingStatus);

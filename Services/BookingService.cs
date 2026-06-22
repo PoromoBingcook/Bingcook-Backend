@@ -1,0 +1,394 @@
+using BingCook.Api.Data;
+using BingCook.Api.Models;
+
+namespace BingCook.Api.Services;
+
+public sealed class BookingService : IBookingService
+{
+    private const string BreakfastCode = "breakfast";
+    private const string AirportPickupCode = "airport_pickup";
+    private const string PetSurchargeCode = "pet_surcharge";
+    private const string PayAtPropertyMethod = "PayAtProperty";
+    private const string PayOSMethod = "PayOS";
+
+    private readonly IBookingRepository _bookingRepository;
+    private readonly IPayOSPaymentGateway _payOSPaymentGateway;
+    private readonly ILogger<BookingService> _logger;
+
+    public BookingService(
+        IBookingRepository bookingRepository,
+        IPayOSPaymentGateway payOSPaymentGateway,
+        ILogger<BookingService> logger)
+    {
+        _bookingRepository = bookingRepository;
+        _payOSPaymentGateway = payOSPaymentGateway;
+        _logger = logger;
+    }
+
+    public async Task<BookingDraftOutcome> CreateDraftAsync(
+        BookingSelectionCommand command,
+        CancellationToken cancellationToken)
+    {
+        var validationError = Validate(command);
+        if (validationError is not null)
+        {
+            return BookingDraftOutcome.ValidationError(validationError);
+        }
+
+        var normalizedAddOns = NormalizeAddOns(command.AddOns);
+        var invalidAddOn = normalizedAddOns.FirstOrDefault(addOn => !IsKnownAddOn(addOn));
+        if (invalidAddOn is not null)
+        {
+            return BookingDraftOutcome.ValidationError(
+                $"Unsupported add-on '{invalidAddOn}'.");
+        }
+
+        var quote = await _bookingRepository.GetRoomQuoteAsync(
+            command.PropertyId,
+            command.RoomId,
+            command.CheckIn,
+            command.CheckOut,
+            cancellationToken);
+
+        if (quote is null)
+        {
+            return BookingDraftOutcome.NotFound("Room not found for this property.");
+        }
+
+        var totalGuests = command.Adults + command.Children;
+        var maxGuests = quote.Capacity * command.RoomQuantity;
+        if (totalGuests > maxGuests)
+        {
+            return BookingDraftOutcome.ValidationError(
+                $"Guest count exceeds room capacity. Max guests: {maxGuests}.");
+        }
+
+        if (quote.AvailableRooms < command.RoomQuantity)
+        {
+            return BookingDraftOutcome.Unavailable(
+                $"Only {quote.AvailableRooms} room(s) available for the selected dates.");
+        }
+
+        var nights = command.CheckOut.DayNumber - command.CheckIn.DayNumber;
+        var roomSubtotal = quote.PricePerNight * nights * command.RoomQuantity;
+        var addOns = BuildAddOns(
+            normalizedAddOns,
+            totalGuests,
+            command.RoomQuantity,
+            nights);
+        var addOnSubtotal = addOns.Sum(addOn => addOn.TotalPrice);
+        var totalPrice = roomSubtotal + addOnSubtotal;
+
+        var bookingId = await _bookingRepository.CreateDraftAsync(
+            new CreateBookingDraftCommand(
+                command.UserId,
+                command.PropertyId,
+                command.RoomId,
+                command.CheckIn,
+                command.CheckOut,
+                command.Adults,
+                command.Children,
+                command.RoomQuantity,
+                totalGuests,
+                totalPrice,
+                normalizedAddOns,
+                NormalizeNote(command.Note)),
+            cancellationToken);
+
+        var draft = new BookingDraft(
+            bookingId,
+            quote.PropertyId,
+            quote.PropertyName,
+            quote.RoomId,
+            quote.RoomName,
+            quote.RoomType,
+            command.CheckIn,
+            command.CheckOut,
+            nights,
+            command.Adults,
+            command.Children,
+            totalGuests,
+            command.RoomQuantity,
+            maxGuests,
+            quote.AvailableRooms,
+            roomSubtotal,
+            addOnSubtotal,
+            totalPrice,
+            addOns,
+            NormalizeNote(command.Note));
+
+        return BookingDraftOutcome.Success(draft);
+    }
+
+    public async Task<BookingCheckoutOutcome> CheckoutAsync(
+        BookingCheckoutCommand command,
+        CancellationToken cancellationToken)
+    {
+        var paymentMethod = NormalizePaymentMethod(command.PaymentMethod);
+        if (paymentMethod is null)
+        {
+            return BookingCheckoutOutcome.ValidationError(
+                "Payment method must be PayAtProperty or PayOS.");
+        }
+
+        var quote = await _bookingRepository.GetCheckoutQuoteAsync(
+            command.BookingId,
+            command.UserId,
+            cancellationToken);
+        if (quote is null)
+        {
+            return BookingCheckoutOutcome.NotFound("Booking draft not found.");
+        }
+
+        if (quote.Status is not ("Pending" or "PendingPayment"))
+        {
+            return BookingCheckoutOutcome.ValidationError(
+                $"Booking cannot be checked out from status '{quote.Status}'.");
+        }
+
+        if (paymentMethod == PayAtPropertyMethod)
+        {
+            return await ConfirmPayAtPropertyAsync(
+                command,
+                quote,
+                cancellationToken);
+        }
+
+        return await CreatePayOSPaymentAsync(
+            command,
+            quote,
+            cancellationToken);
+    }
+
+    public Task<bool> UpdatePayOSPaymentAsync(
+        PayOSPaymentUpdateCommand command,
+        CancellationToken cancellationToken)
+    {
+        return _bookingRepository.UpdatePayOSPaymentAsync(command, cancellationToken);
+    }
+
+    private static string? Validate(BookingSelectionCommand command)
+    {
+        if (command.PropertyId == Guid.Empty)
+        {
+            return "Property is required.";
+        }
+
+        if (command.RoomId == Guid.Empty)
+        {
+            return "Room is required.";
+        }
+
+        if (command.CheckIn == default || command.CheckOut == default)
+        {
+            return "Check-in and check-out dates are required.";
+        }
+
+        if (command.CheckOut <= command.CheckIn)
+        {
+            return "Check-out date must be after check-in date.";
+        }
+
+        if (command.Adults < 0 || command.Children < 0)
+        {
+            return "Guest counts cannot be negative.";
+        }
+
+        if (command.Adults + command.Children <= 0)
+        {
+            return "At least one guest is required.";
+        }
+
+        if (command.RoomQuantity <= 0)
+        {
+            return "Room quantity must be greater than zero.";
+        }
+
+        if (command.Note?.Length > 1000)
+        {
+            return "Note cannot exceed 1000 characters.";
+        }
+
+        return null;
+    }
+
+    private async Task<BookingCheckoutOutcome> ConfirmPayAtPropertyAsync(
+        BookingCheckoutCommand command,
+        BookingCheckoutQuote quote,
+        CancellationToken cancellationToken)
+    {
+        var transactionCode = $"PAYAT-{quote.BookingId.ToString("N")[..10].ToUpperInvariant()}";
+        var saved = await _bookingRepository.CompleteCheckoutAsync(
+            new CompleteBookingCheckoutCommand(
+                command.UserId,
+                command.BookingId,
+                "Confirmed",
+                PayAtPropertyMethod,
+                "Pending",
+                null,
+                quote.TotalPrice,
+                transactionCode,
+                null,
+                null,
+                NormalizeNote(command.CustomerName),
+                NormalizeNote(command.CustomerEmail),
+                NormalizeNote(command.CustomerPhone),
+                NormalizeNote(command.IdentityNumber)),
+            cancellationToken);
+
+        if (!saved)
+        {
+            return BookingCheckoutOutcome.NotFound("Booking draft not found.");
+        }
+
+        return BookingCheckoutOutcome.Success(
+            new BookingCheckoutResult(
+                quote.BookingId,
+                "Confirmed",
+                PayAtPropertyMethod,
+                "Pending",
+                quote.TotalPrice,
+                transactionCode,
+                null,
+                null,
+                null,
+                "Booking confirmed. Guest pays at property."));
+    }
+
+    private async Task<BookingCheckoutOutcome> CreatePayOSPaymentAsync(
+        BookingCheckoutCommand command,
+        BookingCheckoutQuote quote,
+        CancellationToken cancellationToken)
+    {
+        OnlinePaymentLink paymentLink;
+        try
+        {
+            paymentLink = await _payOSPaymentGateway.CreatePaymentLinkAsync(
+                new CreateOnlinePaymentLinkCommand(
+                    quote.BookingId,
+                    quote.PropertyName,
+                    quote.RoomName,
+                    quote.TotalPrice),
+                cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                error,
+                "Unable to create PayOS payment link for booking {BookingId}.",
+                quote.BookingId);
+            return BookingCheckoutOutcome.GatewayError(
+                "Unable to create PayOS payment link.");
+        }
+
+        var saved = await _bookingRepository.CompleteCheckoutAsync(
+            new CompleteBookingCheckoutCommand(
+                command.UserId,
+                command.BookingId,
+                "PendingPayment",
+                PayOSMethod,
+                "Pending",
+                "PayOS",
+                quote.TotalPrice,
+                paymentLink.OrderCode.ToString(),
+                paymentLink.CheckoutUrl,
+                paymentLink.QrCode,
+                NormalizeNote(command.CustomerName),
+                NormalizeNote(command.CustomerEmail),
+                NormalizeNote(command.CustomerPhone),
+                NormalizeNote(command.IdentityNumber)),
+            cancellationToken);
+
+        if (!saved)
+        {
+            return BookingCheckoutOutcome.NotFound("Booking draft not found.");
+        }
+
+        return BookingCheckoutOutcome.Success(
+            new BookingCheckoutResult(
+                quote.BookingId,
+                "PendingPayment",
+                PayOSMethod,
+                "Pending",
+                quote.TotalPrice,
+                paymentLink.OrderCode.ToString(),
+                paymentLink.PaymentLinkId,
+                paymentLink.CheckoutUrl,
+                paymentLink.QrCode,
+                "Open checkoutUrl to pay with PayOS."));
+    }
+
+    private static string? NormalizePaymentMethod(string paymentMethod)
+    {
+        return paymentMethod.Trim() switch
+        {
+            var value when value.Equals(
+                PayAtPropertyMethod,
+                StringComparison.OrdinalIgnoreCase) => PayAtPropertyMethod,
+            var value when value.Equals(
+                "PayNow",
+                StringComparison.OrdinalIgnoreCase) => PayOSMethod,
+            var value when value.Equals(
+                PayOSMethod,
+                StringComparison.OrdinalIgnoreCase) => PayOSMethod,
+            _ => null
+        };
+    }
+
+    private static IReadOnlyList<string> NormalizeAddOns(IReadOnlyList<string> addOns)
+    {
+        return addOns
+            .Where(addOn => !string.IsNullOrWhiteSpace(addOn))
+            .Select(addOn => addOn.Trim().ToLowerInvariant())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static string? NormalizeNote(string? note)
+    {
+        var normalized = note?.Trim();
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private static bool IsKnownAddOn(string code)
+    {
+        return code is BreakfastCode or AirportPickupCode or PetSurchargeCode;
+    }
+
+    private static IReadOnlyList<BookingAddOn> BuildAddOns(
+        IReadOnlyList<string> codes,
+        int totalGuests,
+        int roomQuantity,
+        int nights)
+    {
+        var addOns = new List<BookingAddOn>();
+        foreach (var code in codes)
+        {
+            addOns.Add(code switch
+            {
+                BreakfastCode => new BookingAddOn(
+                    BreakfastCode,
+                    "Breakfast",
+                    "Per guest per night",
+                    120000m,
+                    120000m * totalGuests * nights),
+                AirportPickupCode => new BookingAddOn(
+                    AirportPickupCode,
+                    "Airport pickup",
+                    "Per booking",
+                    250000m,
+                    250000m),
+                PetSurchargeCode => new BookingAddOn(
+                    PetSurchargeCode,
+                    "Pet surcharge",
+                    "Per room per night",
+                    150000m,
+                    150000m * roomQuantity * nights),
+                _ => throw new InvalidOperationException(
+                    $"Unsupported add-on '{code}'.")
+            });
+        }
+
+        return addOns;
+    }
+}
