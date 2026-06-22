@@ -45,7 +45,13 @@ public sealed class SqlServerBookingRepository : IBookingRepository
                 WHERE b.RoomId = r.Id
                   AND b.CheckIn < @checkOut
                   AND b.CheckOut > @checkIn
-                  AND b.[Status] NOT IN (N'Cancelled', N'Canceled')
+                  AND (
+                      b.[Status] IN (N'Confirmed', N'Paid')
+                      OR (
+                          b.[Status] IN (N'Pending', N'PendingPayment')
+                          AND (b.ExpiresAt IS NULL OR b.ExpiresAt > SYSUTCDATETIME())
+                      )
+                  )
             ) booked
             WHERE p.Id = @propertyId
               AND r.Id = @roomId
@@ -97,7 +103,8 @@ public sealed class SqlServerBookingRepository : IBookingRepository
                 RoomQuantity,
                 AdultGuest,
                 ChildGuest,
-                SelectedAddOns)
+                SelectedAddOns,
+                ExpiresAt)
             OUTPUT INSERTED.Id
             VALUES (
                 @userId,
@@ -112,7 +119,8 @@ public sealed class SqlServerBookingRepository : IBookingRepository
                 @roomQuantity,
                 @adultGuest,
                 @childGuest,
-                @selectedAddOns);
+                @selectedAddOns,
+                @expiresAt);
             """;
 
         await using var connection = _connectionFactory.CreateConnection();
@@ -134,6 +142,7 @@ public sealed class SqlServerBookingRepository : IBookingRepository
             dbCommand,
             "@selectedAddOns",
             JsonSerializer.Serialize(command.AddOns));
+        AddDateTime(dbCommand, "@expiresAt", command.ExpiresAt);
 
         var result = await dbCommand.ExecuteScalarAsync(cancellationToken);
         return result is Guid id
@@ -159,7 +168,8 @@ public sealed class SqlServerBookingRepository : IBookingRepository
                 b.Guest AS guest,
                 COALESCE(b.RoomQuantity, 1) AS roomquantity,
                 COALESCE(b.TotalPrice, 0) AS totalprice,
-                b.[Status] AS status
+                b.[Status] AS status,
+                b.ExpiresAt AS expiresat
             FROM dbo.Booking b
             INNER JOIN dbo.Property p ON p.Id = b.PropertyId
             INNER JOIN dbo.Room r ON r.Id = b.RoomId
@@ -192,7 +202,8 @@ public sealed class SqlServerBookingRepository : IBookingRepository
             reader.GetInt32(reader.GetOrdinal("guest")),
             reader.GetInt32(reader.GetOrdinal("roomquantity")),
             reader.GetDecimal(reader.GetOrdinal("totalprice")),
-            reader.GetString(reader.GetOrdinal("status")));
+            reader.GetString(reader.GetOrdinal("status")),
+            ReadNullableDateTime(reader, "expiresat"));
     }
 
     public async Task<bool> CompleteCheckoutAsync(
@@ -209,28 +220,78 @@ public sealed class SqlServerBookingRepository : IBookingRepository
                 IdentityNumber = @identityNumber
             WHERE Id = @bookingId
               AND UserId = @userId
-              AND [Status] IN (N'Pending', N'PendingPayment');
+              AND [Status] IN (N'Pending', N'PendingPayment')
+              AND (ExpiresAt IS NULL OR ExpiresAt > SYSUTCDATETIME())
+              AND EXISTS (
+                  SELECT 1
+                  FROM dbo.Room r
+                  OUTER APPLY (
+                      SELECT COALESCE(SUM(COALESCE(other.RoomQuantity, 1)), 0) AS BookedRooms
+                      FROM dbo.Booking other
+                      WHERE other.RoomId = r.Id
+                        AND other.Id <> @bookingId
+                        AND other.CheckIn < (SELECT CheckOut FROM dbo.Booking WHERE Id = @bookingId)
+                        AND other.CheckOut > (SELECT CheckIn FROM dbo.Booking WHERE Id = @bookingId)
+                        AND (
+                            other.[Status] IN (N'Confirmed', N'Paid')
+                            OR (
+                                other.[Status] IN (N'Pending', N'PendingPayment')
+                                AND (other.ExpiresAt IS NULL OR other.ExpiresAt > SYSUTCDATETIME())
+                            )
+                        )
+                  ) booked
+                  WHERE r.Id = dbo.Booking.RoomId
+                    AND COALESCE(r.TotalRoom, 1) - COALESCE(booked.BookedRooms, 0) >= dbo.Booking.RoomQuantity
+              );
             """;
 
-        const string insertPaymentSql = """
-            INSERT INTO dbo.Payment (
-                BookingId,
-                Method,
-                Amount,
-                [Status],
-                Provider,
-                TransactionCode,
-                CheckoutUrl,
-                QrCode)
-            VALUES (
-                @bookingId,
-                @paymentMethod,
-                @amount,
-                @paymentStatus,
-                @provider,
-                @transactionCode,
-                @checkoutUrl,
-                @qrCode);
+        const string upsertPaymentSql = """
+            IF @provider = N'PayOS'
+               AND EXISTS (
+                   SELECT 1
+                   FROM dbo.Payment
+                   WHERE BookingId = @bookingId
+                     AND Provider = N'PayOS'
+                     AND [Status] = N'Pending'
+               )
+            BEGIN
+                UPDATE dbo.Payment
+                SET
+                    Method = @paymentMethod,
+                    Amount = @amount,
+                    [Status] = @paymentStatus,
+                    TransactionCode = @transactionCode,
+                    PaymentLinkId = @paymentLinkId,
+                    CheckoutUrl = @checkoutUrl,
+                    QrCode = @qrCode,
+                    UpdatedAt = SYSUTCDATETIME()
+                WHERE BookingId = @bookingId
+                  AND Provider = N'PayOS'
+                  AND [Status] = N'Pending';
+            END
+            ELSE
+            BEGIN
+                INSERT INTO dbo.Payment (
+                    BookingId,
+                    Method,
+                    Amount,
+                    [Status],
+                    Provider,
+                    TransactionCode,
+                    PaymentLinkId,
+                    CheckoutUrl,
+                    QrCode)
+                VALUES (
+                    @bookingId,
+                    @paymentMethod,
+                    @amount,
+                    @paymentStatus,
+                    @provider,
+                    @transactionCode,
+                    @paymentLinkId,
+                    @checkoutUrl,
+                    @qrCode);
+            END;
             """;
 
         await using var connection = _connectionFactory.CreateConnection();
@@ -249,14 +310,162 @@ public sealed class SqlServerBookingRepository : IBookingRepository
             return false;
         }
 
-        await using var insertPayment = connection.CreateCommand();
-        insertPayment.Transaction = (SqlTransaction)transaction;
-        insertPayment.CommandText = insertPaymentSql;
-        AddCheckoutParameters(insertPayment, command);
-        await insertPayment.ExecuteNonQueryAsync(cancellationToken);
+        await using var upsertPayment = connection.CreateCommand();
+        upsertPayment.Transaction = (SqlTransaction)transaction;
+        upsertPayment.CommandText = upsertPaymentSql;
+        AddCheckoutParameters(upsertPayment, command);
+        await upsertPayment.ExecuteNonQueryAsync(cancellationToken);
 
         await transaction.CommitAsync(cancellationToken);
         return true;
+    }
+
+    public async Task<ActiveBookingPayment?> GetActivePaymentByBookingIdAsync(
+        Guid bookingId,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1)
+                b.Id AS bookingid,
+                p.[Status] AS paymentstatus,
+                p.Method AS paymentmethod,
+                p.Amount AS amount,
+                p.TransactionCode AS transactioncode,
+                p.PaymentLinkId AS paymentlinkid,
+                p.CheckoutUrl AS checkouturl,
+                p.QrCode AS qrcode,
+                b.ExpiresAt AS expiresat
+            FROM dbo.Booking b
+            INNER JOIN dbo.Payment p ON p.BookingId = b.Id
+            WHERE b.Id = @bookingId
+              AND b.UserId = @userId
+              AND b.[Status] = N'PendingPayment'
+              AND p.Provider = N'PayOS'
+              AND p.[Status] = N'Pending'
+              AND (b.ExpiresAt IS NULL OR b.ExpiresAt > SYSUTCDATETIME())
+            ORDER BY p.CreatedAt DESC;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add("@bookingId", SqlDbType.UniqueIdentifier).Value = bookingId;
+        command.Parameters.Add("@userId", SqlDbType.UniqueIdentifier).Value = userId;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new ActiveBookingPayment(
+            reader.GetGuid(reader.GetOrdinal("bookingid")),
+            reader.GetString(reader.GetOrdinal("paymentstatus")),
+            reader.GetString(reader.GetOrdinal("paymentmethod")),
+            reader.GetDecimal(reader.GetOrdinal("amount")),
+            reader.GetString(reader.GetOrdinal("transactioncode")),
+            ReadNullableString(reader, "paymentlinkid"),
+            ReadNullableString(reader, "checkouturl"),
+            ReadNullableString(reader, "qrcode"),
+            ReadNullableDateTime(reader, "expiresat"));
+    }
+
+    public async Task<BookingPaymentStatus?> GetBookingPaymentStatusAsync(
+        Guid bookingId,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1)
+                b.Id AS bookingid,
+                b.[Status] AS bookingstatus,
+                p.Method AS paymentmethod,
+                p.[Status] AS paymentstatus,
+                p.Amount AS amount,
+                p.TransactionCode AS transactioncode,
+                p.PaymentLinkId AS paymentlinkid,
+                p.CheckoutUrl AS checkouturl,
+                b.ExpiresAt AS expiresat,
+                p.PaidAt AS paidat,
+                p.UpdatedAt AS updatedat
+            FROM dbo.Booking b
+            OUTER APPLY (
+                SELECT TOP (1)
+                    Method,
+                    [Status],
+                    Amount,
+                    TransactionCode,
+                    PaymentLinkId,
+                    CheckoutUrl,
+                    PaidAt,
+                    UpdatedAt,
+                    CreatedAt
+                FROM dbo.Payment
+                WHERE BookingId = b.Id
+                ORDER BY CreatedAt DESC
+            ) p
+            WHERE b.Id = @bookingId
+              AND b.UserId = @userId;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add("@bookingId", SqlDbType.UniqueIdentifier).Value = bookingId;
+        command.Parameters.Add("@userId", SqlDbType.UniqueIdentifier).Value = userId;
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new BookingPaymentStatus(
+            reader.GetGuid(reader.GetOrdinal("bookingid")),
+            reader.GetString(reader.GetOrdinal("bookingstatus")),
+            ReadNullableString(reader, "paymentmethod"),
+            ReadNullableString(reader, "paymentstatus"),
+            ReadNullableDecimal(reader, "amount"),
+            ReadNullableString(reader, "transactioncode"),
+            ReadNullableString(reader, "paymentlinkid"),
+            ReadNullableString(reader, "checkouturl"),
+            ReadNullableDateTime(reader, "expiresat"),
+            ReadNullableDateTime(reader, "paidat"),
+            ReadNullableDateTime(reader, "updatedat"));
+    }
+
+    public async Task<int> ExpireStaleBookingsAsync(
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE p
+            SET
+                [Status] = N'Expired',
+                UpdatedAt = SYSUTCDATETIME()
+            FROM dbo.Payment p
+            INNER JOIN dbo.Booking b ON b.Id = p.BookingId
+            WHERE b.[Status] IN (N'Pending', N'PendingPayment')
+              AND b.ExpiresAt IS NOT NULL
+              AND b.ExpiresAt <= @now
+              AND p.[Status] = N'Pending';
+
+            UPDATE dbo.Booking
+            SET [Status] = N'Expired'
+            WHERE [Status] IN (N'Pending', N'PendingPayment')
+              AND ExpiresAt IS NOT NULL
+              AND ExpiresAt <= @now;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        AddDateTime(command, "@now", now);
+        return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
     public async Task<bool> UpdatePayOSPaymentAsync(
@@ -264,10 +473,14 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         CancellationToken cancellationToken)
     {
         const string findBookingSql = """
-            SELECT TOP (1) BookingId
-            FROM dbo.Payment
-            WHERE TransactionCode = @transactionCode
-              AND Provider = N'PayOS';
+            SELECT TOP (1)
+                p.BookingId,
+                p.[Status] AS paymentstatus,
+                b.[Status] AS bookingstatus
+            FROM dbo.Payment p
+            INNER JOIN dbo.Booking b ON b.Id = p.BookingId
+            WHERE p.TransactionCode = @transactionCode
+              AND p.Provider = N'PayOS';
             """;
 
         const string updatePaymentSql = """
@@ -297,11 +510,23 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         findBooking.Transaction = (SqlTransaction)transaction;
         findBooking.CommandText = findBookingSql;
         AddText(findBooking, "@transactionCode", command.TransactionCode, 100);
-        var bookingIdResult = await findBooking.ExecuteScalarAsync(cancellationToken);
-        if (bookingIdResult is not Guid bookingId)
+        await using var reader = await findBooking.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
         {
             await transaction.RollbackAsync(cancellationToken);
             return false;
+        }
+
+        var bookingId = reader.GetGuid(reader.GetOrdinal("BookingId"));
+        var currentPaymentStatus = reader.GetString(reader.GetOrdinal("paymentstatus"));
+        var currentBookingStatus = reader.GetString(reader.GetOrdinal("bookingstatus"));
+        await reader.CloseAsync();
+
+        if (!PaymentStatuses.CanTransition(currentPaymentStatus, command.PaymentStatus)
+            || !BookingStatuses.CanTransition(currentBookingStatus, command.BookingStatus))
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return true;
         }
 
         await using var updatePayment = connection.CreateCommand();
@@ -340,6 +565,7 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         AddNullableText(dbCommand, "@provider", command.Provider, 50);
         AddMoney(dbCommand, "@amount", command.Amount);
         AddNullableText(dbCommand, "@transactionCode", command.TransactionCode, 100);
+        AddNullableText(dbCommand, "@paymentLinkId", command.PaymentLinkId, 100);
         AddNullableText(dbCommand, "@checkoutUrl", command.CheckoutUrl);
         AddNullableText(dbCommand, "@qrCode", command.QrCode);
         AddNullableText(dbCommand, "@customerName", command.CustomerName, 100);
@@ -360,6 +586,29 @@ public sealed class SqlServerBookingRepository : IBookingRepository
     {
         command.Parameters.Add(name, SqlDbType.Date).Value =
             value.ToDateTime(TimeOnly.MinValue);
+    }
+
+    private static void AddDateTime(SqlCommand command, string name, DateTime value)
+    {
+        command.Parameters.Add(name, SqlDbType.DateTime2).Value = value;
+    }
+
+    private static string? ReadNullableString(SqlDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
+    }
+
+    private static DateTime? ReadNullableDateTime(SqlDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        return reader.IsDBNull(ordinal) ? null : reader.GetDateTime(ordinal);
+    }
+
+    private static decimal? ReadNullableDecimal(SqlDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        return reader.IsDBNull(ordinal) ? null : reader.GetDecimal(ordinal);
     }
 
     private static void AddNullableText(

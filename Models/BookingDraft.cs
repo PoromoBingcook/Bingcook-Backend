@@ -24,7 +24,8 @@ public sealed record CreateBookingDraftCommand(
     int TotalGuests,
     decimal TotalPrice,
     IReadOnlyList<string> AddOns,
-    string? Note);
+    string? Note,
+    DateTime ExpiresAt);
 
 public sealed record BookingRoomQuote(
     Guid PropertyId,
@@ -57,7 +58,8 @@ public sealed record BookingDraft(
     decimal AddOnSubtotal,
     decimal TotalPrice,
     IReadOnlyList<BookingAddOn> AddOns,
-    string? Note);
+    string? Note,
+    DateTime ExpiresAt);
 
 public sealed record BookingAddOn(
     string Code,

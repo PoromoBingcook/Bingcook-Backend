@@ -124,7 +124,7 @@ Controller: `Controllers/BookingsController.cs`.
 - `POST /api/bookings/draft`
   - Yeu cau `[Authorize]`.
   - Body: `CreateBookingDraftRequest`.
-  - Tao booking tam thoi status `Pending`.
+  - Tao booking tam thoi status `Pending`, co `ExpiresAt` de giu phong tam thoi.
   - Validate ngay tra phong phai sau ngay nhan phong.
   - Validate tong khach nguoi lon/tre em > 0.
   - Validate tong khach khong vuot `room.capacity * roomQuantity`.
@@ -142,8 +142,19 @@ Add-on code hien co trong `BookingService`:
   - Yeu cau `[Authorize]`.
   - Body: `CheckoutBookingRequest`.
   - `paymentMethod = PayAtProperty`: booking status `Confirmed`, payment status `Pending`, khach tra tai noi luu tru.
-  - `paymentMethod = PayOS` hoac `PayNow`: tao PayOS checkout URL, booking status `PendingPayment`, payment status `Pending`.
-  - Tra `BookingCheckoutResponse` gom booking/payment status, amount, transactionCode, paymentLinkId, checkoutUrl, qrCode.
+  - `paymentMethod = PayOS` hoac `PayNow`: tao hoac reuse PayOS checkout URL, booking status `PendingPayment`, payment status `Pending`.
+  - Checkout re-check phong con trong transaction va tu choi draft da het han.
+  - Tra `BookingCheckoutResponse` gom booking/payment status, amount, transactionCode, paymentLinkId, checkoutUrl, qrCode, expiresAt.
+
+- `GET /api/bookings/{bookingId}/status`
+  - Yeu cau `[Authorize]`.
+  - Frontend/mobile dung de poll sau PayOS redirect.
+  - Tra booking/payment status moi nhat, transactionCode, paymentLinkId, checkoutUrl, expiresAt, paidAt/updatedAt.
+
+- `POST /api/bookings/{bookingId}/repay`
+  - Yeu cau `[Authorize]`.
+  - Tao lai/lay lai PayOS checkout link cho booking `Pending`/`PendingPayment` con han.
+  - Body: `RepayBookingRequest` gom thong tin lien he.
 
 Controller: `Controllers/PaymentsController.cs`.
 
@@ -153,10 +164,10 @@ Controller: `Controllers/PaymentsController.cs`.
   - Neu status `PAID`, update payment `Success` va booking `Paid`.
 - `GET /api/payments/payos/return`
   - Redirect URL sau khi PayOS thanh toan thanh cong.
-  - Demo fallback: neu query `status=PAID`, update booking `Paid`.
+  - Query PayOS de verify status truoc khi update booking/payment.
 - `GET /api/payments/payos/cancel`
   - Redirect URL khi user huy PayOS.
-  - Update payment `Cancelled` va booking `Cancelled` neu co `orderCode`.
+  - Goi PayOS cancel API/verify status truoc khi update booking/payment.
 
 ## Auth flow
 
@@ -190,7 +201,7 @@ Create booking draft
   -> validate dates / guests / room quantity / availability
   -> calculate nights + subtotal
   -> IBookingRepository.CreateDraftAsync
-  -> BookingDraftResponse
+  -> BookingDraftResponse + expiresAt
 
 Checkout PayAtProperty
   -> BookingsController.Checkout
@@ -203,8 +214,10 @@ Checkout PayAtProperty
 Checkout PayOS
   -> BookingsController.Checkout
   -> IBookingService.CheckoutAsync
+  -> expire stale drafts/payments
+  -> reuse active PayOS payment neu con han
   -> IPayOSPaymentGateway.CreatePaymentLinkAsync
-  -> IBookingRepository.CompleteCheckoutAsync
+  -> IBookingRepository.CompleteCheckoutAsync + transactional availability re-check
   -> booking PendingPayment + payment Pending
   -> frontend open checkoutUrl / qrCode
   -> PayOS webhook/return
@@ -230,13 +243,14 @@ Cac table/column chinh repository can:
 - `dbo.Room`: `Id`, `PropertyId`, `Name`, `Price`, `Capacity`, `TotalRoom`, `AvailableRoom`.
 - `dbo.RoomImage`: `Id`, `RoomId`, `ImageUrl`.
 - `dbo.Booking`: `Id`, `UserId`, `PropertyId`, `RoomId`, `CheckIn`, `CheckOut`, `Guest`, `TotalPrice`, `Status`, `Note`, `RoomQuantity`, `AdultGuest`, `ChildGuest`, `SelectedAddOns`, `ContactFullName`, `ContactEmail`, `ContactPhone`, `IdentityNumber`.
-- `dbo.Payment`: `Id`, `BookingId`, `Method`, `Amount`, `Status`, `CreatedAt`, `Provider`, `TransactionCode`, `CheckoutUrl`, `QrCode`, `PaidAt`, `UpdatedAt`.
+- `dbo.Booking`: them `ExpiresAt` de gioi han thoi gian giu phong.
+- `dbo.Payment`: `Id`, `BookingId`, `Method`, `Amount`, `Status`, `CreatedAt`, `Provider`, `TransactionCode`, `PaymentLinkId`, `CheckoutUrl`, `QrCode`, `PaidAt`, `UpdatedAt`.
 - `dbo.Review`: `PropertyId`, `Rating`, `UserId`, `Comment`, `CreatedAt`.
 
 Can luu y:
 
 - `SelectedAddOns` trong SQL Server luu JSON text, vi SQL Server khong co `TEXT[]` nhu PostgreSQL.
-- Product/booking availability tinh bang `TotalRoom - SUM(Booking.RoomQuantity)` trong khoang ngay overlap.
+- Product/booking availability tinh bang `TotalRoom - SUM(Booking.RoomQuantity)` trong khoang ngay overlap, chi tinh booking `Confirmed/Paid` hoac `Pending/PendingPayment` con han `ExpiresAt`.
 - Neu gap loi dang ky dang kieu `NpgsqlConnector.SetupEncryption`, nghia la app dang chay binary/config cu PostgreSQL hoac chua restart sau migrate SQL Server.
 - `scripts/seed_booking_rooms.sql` la seed/patch PostgreSQL cu; voi SQL Server hay dung `C:/FPTU/SU26/PRM393/BookingDB.sql`.
 ## Config
@@ -252,8 +266,9 @@ File chinh: `appsettings.json`.
 - `WelcomeEmail:Host`, `Port`, `EnableSsl`, `Username`, `Password`, `FromEmail`, `FromName`: SMTP config.
 - `PayOS__ClientId`, `PayOS__ApiKey`, `PayOS__ChecksumKey`: PayOS secret env vars.
 - `PayOS__ReturnUrl`, `PayOS__CancelUrl`: PayOS redirect URLs.
+- `Booking:HoldMinutes`: so phut giu phong tam thoi cho booking `Pending/PendingPayment`.
 
-Khuyen nghi: khong commit password/secret that vao `appsettings.json`; dung user secrets, env vars, hoac config rieng theo moi truong.
+Khuyen nghi: khong commit password/secret that vao `appsettings.json`; dung user secrets, env vars, `.env`, hoac config rieng theo moi truong. File `.env` co the dung key dang `ConnectionStrings__DefaultConnection=...`.
 
 Repo co loader `.env` trong `Program.cs`. File `.env` duoc `.gitignore` bo qua.
 
@@ -315,8 +330,8 @@ Khi them logic service, uu tien test service bang fake repository/sender nhu pat
 - Booking draft tao row `booking` status `Pending`, chua xu ly payment.
 - Booking add-on hien luu code JSON trong `Booking.SelectedAddOns`; gia add-on tinh trong `BookingService`.
 - Checkout PayAtProperty tao payment status `Pending`, booking status `Confirmed`.
-- Checkout PayOS tao PayOS link, payment status `Pending`, booking status `PendingPayment`.
-- PayOS success update payment `Success`, booking `Paid`; cancel update ca hai ve `Cancelled`.
+- Checkout PayOS tao hoac reuse PayOS link, payment status `Pending`, booking status `PendingPayment`.
+- PayOS success update payment `Success`, booking `Paid`; cancel/expired update theo state machine va khong downgrade booking da `Paid`.
 - Schema SQL ngoai project can sync voi repository truoc khi deploy.
 
 

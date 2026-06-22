@@ -21,7 +21,8 @@ public sealed record BookingCheckoutQuote(
     int Guest,
     int RoomQuantity,
     decimal TotalPrice,
-    string Status);
+    string Status,
+    DateTime? ExpiresAt);
 
 public sealed record CompleteBookingCheckoutCommand(
     Guid UserId,
@@ -32,12 +33,37 @@ public sealed record CompleteBookingCheckoutCommand(
     string? Provider,
     decimal Amount,
     string? TransactionCode,
+    string? PaymentLinkId,
     string? CheckoutUrl,
     string? QrCode,
     string? CustomerName,
     string? CustomerEmail,
     string? CustomerPhone,
     string? IdentityNumber);
+
+public sealed record ActiveBookingPayment(
+    Guid BookingId,
+    string PaymentStatus,
+    string PaymentMethod,
+    decimal Amount,
+    string TransactionCode,
+    string? PaymentLinkId,
+    string? CheckoutUrl,
+    string? QrCode,
+    DateTime? ExpiresAt);
+
+public sealed record BookingPaymentStatus(
+    Guid BookingId,
+    string BookingStatus,
+    string? PaymentMethod,
+    string? PaymentStatus,
+    decimal? Amount,
+    string? TransactionCode,
+    string? PaymentLinkId,
+    string? CheckoutUrl,
+    DateTime? ExpiresAt,
+    DateTime? PaidAt,
+    DateTime? UpdatedAt);
 
 public sealed record CreateOnlinePaymentLinkCommand(
     Guid BookingId,
@@ -52,6 +78,12 @@ public sealed record OnlinePaymentLink(
     string? QrCode,
     string Status);
 
+public sealed record OnlinePaymentStatus(
+    long OrderCode,
+    string? PaymentLinkId,
+    string Status,
+    decimal? Amount);
+
 public sealed record BookingCheckoutResult(
     Guid BookingId,
     string BookingStatus,
@@ -62,6 +94,7 @@ public sealed record BookingCheckoutResult(
     string? PaymentLinkId,
     string? CheckoutUrl,
     string? QrCode,
+    DateTime? ExpiresAt,
     string Message);
 
 public sealed record PayOSPaymentUpdateCommand(

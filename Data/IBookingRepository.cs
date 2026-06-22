@@ -24,6 +24,20 @@ public interface IBookingRepository
         CompleteBookingCheckoutCommand command,
         CancellationToken cancellationToken);
 
+    Task<ActiveBookingPayment?> GetActivePaymentByBookingIdAsync(
+        Guid bookingId,
+        Guid userId,
+        CancellationToken cancellationToken);
+
+    Task<BookingPaymentStatus?> GetBookingPaymentStatusAsync(
+        Guid bookingId,
+        Guid userId,
+        CancellationToken cancellationToken);
+
+    Task<int> ExpireStaleBookingsAsync(
+        DateTime now,
+        CancellationToken cancellationToken);
+
     Task<bool> UpdatePayOSPaymentAsync(
         PayOSPaymentUpdateCommand command,
         CancellationToken cancellationToken);

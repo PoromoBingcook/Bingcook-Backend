@@ -40,10 +40,7 @@ public sealed class PaymentsController : ControllerBase
         }
 
         var status = ReadStatus(data);
-        var paymentStatus = status.Equals("PAID", StringComparison.OrdinalIgnoreCase)
-            ? "Success"
-            : "Pending";
-        var bookingStatus = paymentStatus == "Success" ? "Paid" : "PendingPayment";
+        var (paymentStatus, bookingStatus) = MapPayOSStatus(status);
 
         var updated = await _bookingService.UpdatePayOSPaymentAsync(
             new PayOSPaymentUpdateCommand(
@@ -60,37 +57,64 @@ public sealed class PaymentsController : ControllerBase
     [HttpGet("payos/return")]
     public async Task<IActionResult> PayOSReturn(CancellationToken cancellationToken)
     {
-        var status = Request.Query["status"].ToString();
         if (!TryReadOrderCode(Request.Query, out var transactionCode)
-            || !status.Equals("PAID", StringComparison.OrdinalIgnoreCase))
+            || !long.TryParse(transactionCode, out var orderCode))
         {
-            return Ok(new { message = "PayOS return received.", status });
+            return Ok(new { message = "PayOS return received." });
         }
 
+        OnlinePaymentStatus paymentStatus;
+        try
+        {
+            paymentStatus = await _payOSPaymentGateway.GetPaymentLinkAsync(
+                orderCode,
+                cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                new { message = "Unable to verify PayOS payment status." });
+        }
+
+        var (payment, booking) = MapPayOSStatus(paymentStatus.Status);
         await _bookingService.UpdatePayOSPaymentAsync(
-            new PayOSPaymentUpdateCommand(
-                transactionCode,
-                "Success",
-                "Paid"),
+            new PayOSPaymentUpdateCommand(transactionCode, payment, booking),
             cancellationToken);
 
-        return Ok(new { message = "Payment completed.", status = "Paid" });
+        return Ok(new { message = "PayOS return verified.", status = paymentStatus.Status });
     }
 
     [HttpGet("payos/cancel")]
     public async Task<IActionResult> PayOSCancel(CancellationToken cancellationToken)
     {
-        if (TryReadOrderCode(Request.Query, out var transactionCode))
+        if (!TryReadOrderCode(Request.Query, out var transactionCode)
+            || !long.TryParse(transactionCode, out var orderCode))
         {
-            await _bookingService.UpdatePayOSPaymentAsync(
-                new PayOSPaymentUpdateCommand(
-                    transactionCode,
-                    "Cancelled",
-                    "Cancelled"),
-                cancellationToken);
+            return Ok(new { message = "Payment cancellation received." });
         }
 
-        return Ok(new { message = "Payment cancelled.", status = "Cancelled" });
+        OnlinePaymentStatus paymentStatus;
+        try
+        {
+            paymentStatus = await _payOSPaymentGateway.CancelPaymentLinkAsync(
+                orderCode,
+                "Customer cancelled checkout.",
+                cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            return StatusCode(
+                StatusCodes.Status502BadGateway,
+                new { message = "Unable to cancel PayOS payment link." });
+        }
+
+        var (payment, booking) = MapPayOSStatus(paymentStatus.Status);
+        await _bookingService.UpdatePayOSPaymentAsync(
+            new PayOSPaymentUpdateCommand(transactionCode, payment, booking),
+            cancellationToken);
+
+        return Ok(new { message = "Payment cancellation verified.", status = paymentStatus.Status });
     }
 
     private static bool TryReadOrderCode(
@@ -122,6 +146,18 @@ public sealed class PaymentsController : ControllerBase
             && !string.IsNullOrWhiteSpace(status)
                 ? status
                 : string.Empty;
+    }
+
+    private static (string PaymentStatus, string BookingStatus) MapPayOSStatus(string status)
+    {
+        return status.ToUpperInvariant() switch
+        {
+            "PAID" => (PaymentStatuses.Success, BookingStatuses.Paid),
+            "CANCELLED" or "CANCELED" => (PaymentStatuses.Cancelled, BookingStatuses.Cancelled),
+            "EXPIRED" => (PaymentStatuses.Expired, BookingStatuses.Expired),
+            "FAILED" => (PaymentStatuses.Failed, BookingStatuses.PendingPayment),
+            _ => (PaymentStatuses.Pending, BookingStatuses.PendingPayment)
+        };
     }
 
     private static Dictionary<string, string?> ToStringDictionary(

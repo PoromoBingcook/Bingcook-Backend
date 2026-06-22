@@ -1,5 +1,6 @@
 using BingCook.Api.Data;
 using BingCook.Api.Models;
+using Microsoft.Extensions.Options;
 
 namespace BingCook.Api.Services;
 
@@ -13,15 +14,18 @@ public sealed class BookingService : IBookingService
 
     private readonly IBookingRepository _bookingRepository;
     private readonly IPayOSPaymentGateway _payOSPaymentGateway;
+    private readonly BookingOptions _options;
     private readonly ILogger<BookingService> _logger;
 
     public BookingService(
         IBookingRepository bookingRepository,
         IPayOSPaymentGateway payOSPaymentGateway,
+        IOptions<BookingOptions> options,
         ILogger<BookingService> logger)
     {
         _bookingRepository = bookingRepository;
         _payOSPaymentGateway = payOSPaymentGateway;
+        _options = options.Value;
         _logger = logger;
     }
 
@@ -29,6 +33,8 @@ public sealed class BookingService : IBookingService
         BookingSelectionCommand command,
         CancellationToken cancellationToken)
     {
+        await ExpireStaleBookingsAsync(cancellationToken);
+
         var validationError = Validate(command);
         if (validationError is not null)
         {
@@ -78,6 +84,7 @@ public sealed class BookingService : IBookingService
             nights);
         var addOnSubtotal = addOns.Sum(addOn => addOn.TotalPrice);
         var totalPrice = roomSubtotal + addOnSubtotal;
+        var expiresAt = DateTime.UtcNow.Add(GetHoldDuration());
 
         var bookingId = await _bookingRepository.CreateDraftAsync(
             new CreateBookingDraftCommand(
@@ -92,7 +99,8 @@ public sealed class BookingService : IBookingService
                 totalGuests,
                 totalPrice,
                 normalizedAddOns,
-                NormalizeNote(command.Note)),
+                NormalizeNote(command.Note),
+                expiresAt),
             cancellationToken);
 
         var draft = new BookingDraft(
@@ -115,7 +123,8 @@ public sealed class BookingService : IBookingService
             addOnSubtotal,
             totalPrice,
             addOns,
-            NormalizeNote(command.Note));
+            NormalizeNote(command.Note),
+            expiresAt);
 
         return BookingDraftOutcome.Success(draft);
     }
@@ -124,6 +133,8 @@ public sealed class BookingService : IBookingService
         BookingCheckoutCommand command,
         CancellationToken cancellationToken)
     {
+        await ExpireStaleBookingsAsync(cancellationToken);
+
         var paymentMethod = NormalizePaymentMethod(command.PaymentMethod);
         if (paymentMethod is null)
         {
@@ -140,10 +151,16 @@ public sealed class BookingService : IBookingService
             return BookingCheckoutOutcome.NotFound("Booking draft not found.");
         }
 
-        if (quote.Status is not ("Pending" or "PendingPayment"))
+        if (quote.Status is not (BookingStatuses.Pending or BookingStatuses.PendingPayment))
         {
             return BookingCheckoutOutcome.ValidationError(
                 $"Booking cannot be checked out from status '{quote.Status}'.");
+        }
+
+        if (quote.ExpiresAt is not null && quote.ExpiresAt <= DateTime.UtcNow)
+        {
+            return BookingCheckoutOutcome.ValidationError(
+                "Booking draft has expired. Please create a new booking draft.");
         }
 
         if (paymentMethod == PayAtPropertyMethod)
@@ -154,9 +171,49 @@ public sealed class BookingService : IBookingService
                 cancellationToken);
         }
 
+        var checkoutValidationError = ValidatePayOSCheckout(command);
+        if (checkoutValidationError is not null)
+        {
+            return BookingCheckoutOutcome.ValidationError(checkoutValidationError);
+        }
+
+        var activePayment = await _bookingRepository.GetActivePaymentByBookingIdAsync(
+            command.BookingId,
+            command.UserId,
+            cancellationToken);
+        if (activePayment is not null)
+        {
+            return BookingCheckoutOutcome.Success(
+                new BookingCheckoutResult(
+                    activePayment.BookingId,
+                    BookingStatuses.PendingPayment,
+                    activePayment.PaymentMethod,
+                    activePayment.PaymentStatus,
+                    activePayment.Amount,
+                    activePayment.TransactionCode,
+                    activePayment.PaymentLinkId,
+                    activePayment.CheckoutUrl,
+                    activePayment.QrCode,
+                    activePayment.ExpiresAt,
+                    "Open checkoutUrl to continue PayOS payment."));
+        }
+
         return await CreatePayOSPaymentAsync(
             command,
             quote,
+            cancellationToken);
+    }
+
+    public async Task<BookingPaymentStatus?> GetStatusAsync(
+        Guid bookingId,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        await ExpireStaleBookingsAsync(cancellationToken);
+
+        return await _bookingRepository.GetBookingPaymentStatusAsync(
+            bookingId,
+            userId,
             cancellationToken);
     }
 
@@ -212,6 +269,39 @@ public sealed class BookingService : IBookingService
         return null;
     }
 
+    private static string? ValidatePayOSCheckout(BookingCheckoutCommand command)
+    {
+        if (string.IsNullOrWhiteSpace(command.CustomerName))
+        {
+            return "Customer name is required for PayOS checkout.";
+        }
+
+        if (string.IsNullOrWhiteSpace(command.CustomerEmail))
+        {
+            return "Customer email is required for PayOS checkout.";
+        }
+
+        if (string.IsNullOrWhiteSpace(command.CustomerPhone))
+        {
+            return "Customer phone is required for PayOS checkout.";
+        }
+
+        return null;
+    }
+
+    private TimeSpan GetHoldDuration()
+    {
+        var minutes = _options.HoldMinutes > 0 ? _options.HoldMinutes : 15;
+        return TimeSpan.FromMinutes(minutes);
+    }
+
+    private Task<int> ExpireStaleBookingsAsync(CancellationToken cancellationToken)
+    {
+        return _bookingRepository.ExpireStaleBookingsAsync(
+            DateTime.UtcNow,
+            cancellationToken);
+    }
+
     private async Task<BookingCheckoutOutcome> ConfirmPayAtPropertyAsync(
         BookingCheckoutCommand command,
         BookingCheckoutQuote quote,
@@ -222,12 +312,13 @@ public sealed class BookingService : IBookingService
             new CompleteBookingCheckoutCommand(
                 command.UserId,
                 command.BookingId,
-                "Confirmed",
+                BookingStatuses.Confirmed,
                 PayAtPropertyMethod,
-                "Pending",
+                PaymentStatuses.Pending,
                 null,
                 quote.TotalPrice,
                 transactionCode,
+                null,
                 null,
                 null,
                 NormalizeNote(command.CustomerName),
@@ -244,14 +335,15 @@ public sealed class BookingService : IBookingService
         return BookingCheckoutOutcome.Success(
             new BookingCheckoutResult(
                 quote.BookingId,
-                "Confirmed",
+                BookingStatuses.Confirmed,
                 PayAtPropertyMethod,
-                "Pending",
+                PaymentStatuses.Pending,
                 quote.TotalPrice,
                 transactionCode,
                 null,
                 null,
                 null,
+                quote.ExpiresAt,
                 "Booking confirmed. Guest pays at property."));
     }
 
@@ -285,12 +377,13 @@ public sealed class BookingService : IBookingService
             new CompleteBookingCheckoutCommand(
                 command.UserId,
                 command.BookingId,
-                "PendingPayment",
+                BookingStatuses.PendingPayment,
                 PayOSMethod,
-                "Pending",
+                PaymentStatuses.Pending,
                 "PayOS",
                 quote.TotalPrice,
                 paymentLink.OrderCode.ToString(),
+                paymentLink.PaymentLinkId,
                 paymentLink.CheckoutUrl,
                 paymentLink.QrCode,
                 NormalizeNote(command.CustomerName),
@@ -307,14 +400,15 @@ public sealed class BookingService : IBookingService
         return BookingCheckoutOutcome.Success(
             new BookingCheckoutResult(
                 quote.BookingId,
-                "PendingPayment",
+                BookingStatuses.PendingPayment,
                 PayOSMethod,
-                "Pending",
+                PaymentStatuses.Pending,
                 quote.TotalPrice,
                 paymentLink.OrderCode.ToString(),
                 paymentLink.PaymentLinkId,
                 paymentLink.CheckoutUrl,
                 paymentLink.QrCode,
+                quote.ExpiresAt,
                 "Open checkoutUrl to pay with PayOS."));
     }
 

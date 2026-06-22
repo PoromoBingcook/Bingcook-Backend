@@ -80,12 +80,89 @@ public sealed class PayOSPaymentGateway : IPayOSPaymentGateway
             throw new InvalidOperationException(result?.Desc ?? "PayOS rejected payment link.");
         }
 
+        if (string.IsNullOrWhiteSpace(result.Data.PaymentLinkId)
+            || string.IsNullOrWhiteSpace(result.Data.CheckoutUrl))
+        {
+            _logger.LogWarning("PayOS payment link creation returned incomplete data: {Body}", body);
+            throw new InvalidOperationException("PayOS payment link response is incomplete.");
+        }
+
         return new OnlinePaymentLink(
             result.Data.OrderCode,
             result.Data.PaymentLinkId,
             result.Data.CheckoutUrl,
             result.Data.QrCode,
             result.Data.Status ?? "PENDING");
+    }
+
+    public async Task<OnlinePaymentStatus> GetPaymentLinkAsync(
+        long orderCode,
+        CancellationToken cancellationToken)
+    {
+        EnsureConfigured();
+
+        using var request = CreateAuthenticatedRequest(
+            HttpMethod.Get,
+            BuildEndpoint($"v2/payment-requests/{orderCode}"));
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning(
+                "PayOS payment link query failed with status {StatusCode}: {Body}",
+                response.StatusCode,
+                body);
+            throw new InvalidOperationException("Unable to query PayOS payment link.");
+        }
+
+        var result = JsonSerializer.Deserialize<PayOSApiResponse<PayOSPaymentLinkData>>(
+            body,
+            JsonOptions);
+        if (result?.Code != "00" || result.Data is null)
+        {
+            _logger.LogWarning("PayOS payment link query rejected: {Body}", body);
+            throw new InvalidOperationException(result?.Desc ?? "PayOS rejected payment query.");
+        }
+
+        return ToStatus(result.Data);
+    }
+
+    public async Task<OnlinePaymentStatus> CancelPaymentLinkAsync(
+        long orderCode,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        EnsureConfigured();
+
+        using var request = CreateAuthenticatedRequest(
+            HttpMethod.Post,
+            BuildEndpoint($"v2/payment-requests/{orderCode}/cancel"));
+        request.Content = JsonContent.Create(
+            new PayOSCancelPaymentLinkRequest(reason),
+            options: JsonOptions);
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning(
+                "PayOS payment link cancellation failed with status {StatusCode}: {Body}",
+                response.StatusCode,
+                body);
+            throw new InvalidOperationException("Unable to cancel PayOS payment link.");
+        }
+
+        var result = JsonSerializer.Deserialize<PayOSApiResponse<PayOSPaymentLinkData>>(
+            body,
+            JsonOptions);
+        if (result?.Code != "00" || result.Data is null)
+        {
+            _logger.LogWarning("PayOS payment link cancellation rejected: {Body}", body);
+            throw new InvalidOperationException(result?.Desc ?? "PayOS rejected payment cancellation.");
+        }
+
+        return ToStatus(result.Data);
     }
 
     public bool VerifyWebhookSignature(
@@ -124,6 +201,14 @@ public sealed class PayOSPaymentGateway : IPayOSPaymentGateway
             UriKind.Absolute);
     }
 
+    private HttpRequestMessage CreateAuthenticatedRequest(HttpMethod method, Uri endpoint)
+    {
+        var request = new HttpRequestMessage(method, endpoint);
+        request.Headers.Add("x-client-id", _options.ClientId);
+        request.Headers.Add("x-api-key", _options.ApiKey);
+        return request;
+    }
+
     private string CreatePaymentLinkSignature(
         long amount,
         string cancelUrl,
@@ -146,7 +231,8 @@ public sealed class PayOSPaymentGateway : IPayOSPaymentGateway
 
     private static long CreateOrderCode()
     {
-        return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        return (DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() * 1000)
+            + RandomNumberGenerator.GetInt32(100, 1000);
     }
 
     private static string CreateDescription(Guid bookingId)
@@ -163,6 +249,9 @@ public sealed class PayOSPaymentGateway : IPayOSPaymentGateway
         [property: JsonPropertyName("cancelUrl")] string CancelUrl,
         [property: JsonPropertyName("signature")] string Signature);
 
+    private sealed record PayOSCancelPaymentLinkRequest(
+        [property: JsonPropertyName("cancellationReason")] string CancellationReason);
+
     private sealed record PayOSApiResponse<T>(
         [property: JsonPropertyName("code")] string? Code,
         [property: JsonPropertyName("desc")] string? Desc,
@@ -170,8 +259,18 @@ public sealed class PayOSPaymentGateway : IPayOSPaymentGateway
 
     private sealed record PayOSPaymentLinkData(
         [property: JsonPropertyName("orderCode")] long OrderCode,
-        [property: JsonPropertyName("paymentLinkId")] string PaymentLinkId,
-        [property: JsonPropertyName("checkoutUrl")] string CheckoutUrl,
+        [property: JsonPropertyName("paymentLinkId")] string? PaymentLinkId,
+        [property: JsonPropertyName("checkoutUrl")] string? CheckoutUrl,
         [property: JsonPropertyName("qrCode")] string? QrCode,
+        [property: JsonPropertyName("amount")] decimal? Amount,
         [property: JsonPropertyName("status")] string? Status);
+
+    private static OnlinePaymentStatus ToStatus(PayOSPaymentLinkData data)
+    {
+        return new OnlinePaymentStatus(
+            data.OrderCode,
+            data.PaymentLinkId,
+            data.Status ?? "PENDING",
+            data.Amount);
+    }
 }

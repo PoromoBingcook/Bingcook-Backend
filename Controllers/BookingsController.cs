@@ -89,6 +89,62 @@ public sealed class BookingsController : ControllerBase
         };
     }
 
+    [HttpGet("{bookingId:guid}/status")]
+    public async Task<ActionResult<BookingStatusResponse>> GetStatus(
+        Guid bookingId,
+        CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        if (userId is null)
+        {
+            return Unauthorized(new { message = "Invalid access token." });
+        }
+
+        var status = await _bookingService.GetStatusAsync(
+            bookingId,
+            userId.Value,
+            cancellationToken);
+
+        return status is null
+            ? NotFound(new { message = "Booking not found." })
+            : Ok(ToResponse(status));
+    }
+
+    [HttpPost("{bookingId:guid}/repay")]
+    public async Task<ActionResult<BookingCheckoutResponse>> Repay(
+        Guid bookingId,
+        RepayBookingRequest request,
+        CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        if (userId is null)
+        {
+            return Unauthorized(new { message = "Invalid access token." });
+        }
+
+        var result = await _bookingService.CheckoutAsync(
+            new BookingCheckoutCommand(
+                userId.Value,
+                bookingId,
+                "PayOS",
+                request.CustomerName,
+                request.CustomerEmail,
+                request.CustomerPhone,
+                request.IdentityNumber),
+            cancellationToken);
+
+        return result.Status switch
+        {
+            BookingCheckoutOutcomeStatus.Success => Ok(ToResponse(result.Result!)),
+            BookingCheckoutOutcomeStatus.ValidationError => BadRequest(new { message = result.Error }),
+            BookingCheckoutOutcomeStatus.NotFound => NotFound(new { message = result.Error }),
+            BookingCheckoutOutcomeStatus.GatewayError => StatusCode(
+                StatusCodes.Status502BadGateway,
+                new { message = result.Error }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
     private Guid? GetUserId()
     {
         var id = User.FindFirstValue(JwtRegisteredClaimNames.Sub)
@@ -120,6 +176,7 @@ public sealed class BookingsController : ControllerBase
             draft.TotalPrice,
             draft.AddOns.Select(ToResponse).ToList(),
             draft.Note,
+            draft.ExpiresAt,
             "ProceedToConfirmationPayment");
     }
 
@@ -145,6 +202,23 @@ public sealed class BookingsController : ControllerBase
             result.PaymentLinkId,
             result.CheckoutUrl,
             result.QrCode,
+            result.ExpiresAt,
             result.Message);
+    }
+
+    private static BookingStatusResponse ToResponse(BookingPaymentStatus status)
+    {
+        return new BookingStatusResponse(
+            status.BookingId,
+            status.BookingStatus,
+            status.PaymentMethod,
+            status.PaymentStatus,
+            status.Amount,
+            status.TransactionCode,
+            status.PaymentLinkId,
+            status.CheckoutUrl,
+            status.ExpiresAt,
+            status.PaidAt,
+            status.UpdatedAt);
     }
 }

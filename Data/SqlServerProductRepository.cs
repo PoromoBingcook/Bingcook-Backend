@@ -83,7 +83,13 @@ public sealed class SqlServerProductRepository : IProductRepository
                     WHERE b.RoomId = r.Id
                       AND (@checkIn IS NULL OR @checkOut IS NULL
                            OR (b.CheckIn < @checkOut AND b.CheckOut > @checkIn))
-                      AND b.[Status] NOT IN (N'Cancelled', N'Canceled')
+                      AND (
+                          b.[Status] IN (N'Confirmed', N'Paid')
+                          OR (
+                              b.[Status] IN (N'Pending', N'PendingPayment')
+                              AND (b.ExpiresAt IS NULL OR b.ExpiresAt > SYSUTCDATETIME())
+                          )
+                      )
                 ) booked
                 WHERE r.PropertyId = p.Id
                   AND (@guests IS NULL OR r.Capacity >= @guests)
@@ -204,7 +210,13 @@ public sealed class SqlServerProductRepository : IProductRepository
                     WHERE b.RoomId = r.Id
                       AND (@checkIn IS NULL OR @checkOut IS NULL
                            OR (b.CheckIn < @checkOut AND b.CheckOut > @checkIn))
-                      AND b.[Status] NOT IN (N'Cancelled', N'Canceled')
+                      AND (
+                          b.[Status] IN (N'Confirmed', N'Paid')
+                          OR (
+                              b.[Status] IN (N'Pending', N'PendingPayment')
+                              AND (b.ExpiresAt IS NULL OR b.ExpiresAt > SYSUTCDATETIME())
+                          )
+                      )
                 ) booked
                 WHERE r.PropertyId = p.Id
                   AND (@guests IS NULL OR r.Capacity >= @guests)
@@ -278,7 +290,13 @@ public sealed class SqlServerProductRepository : IProductRepository
                 WHERE b.RoomId = r.Id
                   AND (@checkIn IS NULL OR @checkOut IS NULL
                        OR (b.CheckIn < @checkOut AND b.CheckOut > @checkIn))
-                  AND b.[Status] NOT IN (N'Cancelled', N'Canceled')
+                  AND (
+                      b.[Status] IN (N'Confirmed', N'Paid')
+                      OR (
+                          b.[Status] IN (N'Pending', N'PendingPayment')
+                          AND (b.ExpiresAt IS NULL OR b.ExpiresAt > SYSUTCDATETIME())
+                      )
+                  )
             ) booked
             OUTER APPLY (
                 SELECT TOP (1) ri.ImageUrl

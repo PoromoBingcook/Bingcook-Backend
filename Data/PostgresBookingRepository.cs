@@ -92,7 +92,8 @@ public sealed class PostgresBookingRepository : IBookingRepository
                 roomquantity,
                 adultguest,
                 childguest,
-                selectedaddons)
+                selectedaddons,
+                expiresat)
             VALUES (
                 @userId,
                 @propertyId,
@@ -106,7 +107,8 @@ public sealed class PostgresBookingRepository : IBookingRepository
                 @roomQuantity,
                 @adultGuest,
                 @childGuest,
-                @selectedAddOns)
+                @selectedAddOns,
+                @expiresAt)
             RETURNING id;
             """;
 
@@ -127,6 +129,7 @@ public sealed class PostgresBookingRepository : IBookingRepository
             "selectedAddOns",
             NpgsqlDbType.Array | NpgsqlDbType.Text);
         addOnsParameter.Value = command.AddOns.ToArray();
+        dbCommand.Parameters.AddWithValue("expiresAt", command.ExpiresAt);
 
         var result = await dbCommand.ExecuteScalarAsync(cancellationToken);
         return result is Guid id
@@ -152,7 +155,8 @@ public sealed class PostgresBookingRepository : IBookingRepository
                 b.guest,
                 COALESCE(b.roomquantity, 1) AS roomquantity,
                 COALESCE(b.totalprice, 0) AS totalprice,
-                b.status::text AS status
+                b.status::text AS status,
+                b.expiresat
             FROM booking b
             INNER JOIN property p ON p.id = b.propertyid
             INNER JOIN room r ON r.id = b.roomid
@@ -183,7 +187,10 @@ public sealed class PostgresBookingRepository : IBookingRepository
             reader.GetInt32(reader.GetOrdinal("guest")),
             reader.GetInt32(reader.GetOrdinal("roomquantity")),
             reader.GetDecimal(reader.GetOrdinal("totalprice")),
-            reader.GetString(reader.GetOrdinal("status")));
+            reader.GetString(reader.GetOrdinal("status")),
+            reader.IsDBNull(reader.GetOrdinal("expiresat"))
+                ? null
+                : reader.GetDateTime(reader.GetOrdinal("expiresat")));
     }
 
     public async Task<bool> CompleteCheckoutAsync(
@@ -212,6 +219,7 @@ public sealed class PostgresBookingRepository : IBookingRepository
                     status,
                     provider,
                     transactioncode,
+                    paymentlinkid,
                     checkouturl,
                     qrcode)
                 SELECT
@@ -221,6 +229,7 @@ public sealed class PostgresBookingRepository : IBookingRepository
                     @paymentStatus,
                     @provider,
                     @transactionCode,
+                    @paymentLinkId,
                     @checkoutUrl,
                     @qrCode
                 FROM updated_booking
@@ -238,6 +247,7 @@ public sealed class PostgresBookingRepository : IBookingRepository
         AddNullableText(dbCommand, "provider", command.Provider);
         dbCommand.Parameters.AddWithValue("amount", command.Amount);
         AddNullableText(dbCommand, "transactionCode", command.TransactionCode);
+        AddNullableText(dbCommand, "paymentLinkId", command.PaymentLinkId);
         AddNullableText(dbCommand, "checkoutUrl", command.CheckoutUrl);
         AddNullableText(dbCommand, "qrCode", command.QrCode);
         AddNullableText(dbCommand, "customerName", command.CustomerName);
@@ -247,6 +257,171 @@ public sealed class PostgresBookingRepository : IBookingRepository
 
         var result = await dbCommand.ExecuteScalarAsync(cancellationToken);
         return result is true;
+    }
+
+    public async Task<ActiveBookingPayment?> GetActivePaymentByBookingIdAsync(
+        Guid bookingId,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                b.id AS bookingid,
+                p.status::text AS paymentstatus,
+                p.method AS paymentmethod,
+                p.amount,
+                p.transactioncode,
+                p.paymentlinkid,
+                p.checkouturl,
+                p.qrcode,
+                b.expiresat
+            FROM booking b
+            INNER JOIN payment p ON p.bookingid = b.id
+            WHERE b.id = @bookingId
+              AND b.userid = @userId
+              AND b.status::text = 'PendingPayment'
+              AND p.provider = 'PayOS'
+              AND p.status::text = 'Pending'
+              AND (b.expiresat IS NULL OR b.expiresat > now())
+            ORDER BY p.createdat DESC
+            LIMIT 1;
+            """;
+
+        await using var command = _dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("bookingId", bookingId);
+        command.Parameters.AddWithValue("userId", userId);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new ActiveBookingPayment(
+            reader.GetGuid(reader.GetOrdinal("bookingid")),
+            reader.GetString(reader.GetOrdinal("paymentstatus")),
+            reader.GetString(reader.GetOrdinal("paymentmethod")),
+            reader.GetDecimal(reader.GetOrdinal("amount")),
+            reader.GetString(reader.GetOrdinal("transactioncode")),
+            reader.IsDBNull(reader.GetOrdinal("paymentlinkid"))
+                ? null
+                : reader.GetString(reader.GetOrdinal("paymentlinkid")),
+            reader.IsDBNull(reader.GetOrdinal("checkouturl"))
+                ? null
+                : reader.GetString(reader.GetOrdinal("checkouturl")),
+            reader.IsDBNull(reader.GetOrdinal("qrcode"))
+                ? null
+                : reader.GetString(reader.GetOrdinal("qrcode")),
+            reader.IsDBNull(reader.GetOrdinal("expiresat"))
+                ? null
+                : reader.GetDateTime(reader.GetOrdinal("expiresat")));
+    }
+
+    public async Task<BookingPaymentStatus?> GetBookingPaymentStatusAsync(
+        Guid bookingId,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                b.id AS bookingid,
+                b.status::text AS bookingstatus,
+                p.method AS paymentmethod,
+                p.status::text AS paymentstatus,
+                p.amount,
+                p.transactioncode,
+                p.paymentlinkid,
+                p.checkouturl,
+                b.expiresat,
+                p.paidat,
+                p.updatedat
+            FROM booking b
+            LEFT JOIN LATERAL (
+                SELECT *
+                FROM payment
+                WHERE bookingid = b.id
+                ORDER BY createdat DESC
+                LIMIT 1
+            ) p ON TRUE
+            WHERE b.id = @bookingId
+              AND b.userid = @userId
+            LIMIT 1;
+            """;
+
+        await using var command = _dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("bookingId", bookingId);
+        command.Parameters.AddWithValue("userId", userId);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new BookingPaymentStatus(
+            reader.GetGuid(reader.GetOrdinal("bookingid")),
+            reader.GetString(reader.GetOrdinal("bookingstatus")),
+            reader.IsDBNull(reader.GetOrdinal("paymentmethod"))
+                ? null
+                : reader.GetString(reader.GetOrdinal("paymentmethod")),
+            reader.IsDBNull(reader.GetOrdinal("paymentstatus"))
+                ? null
+                : reader.GetString(reader.GetOrdinal("paymentstatus")),
+            reader.IsDBNull(reader.GetOrdinal("amount"))
+                ? null
+                : reader.GetDecimal(reader.GetOrdinal("amount")),
+            reader.IsDBNull(reader.GetOrdinal("transactioncode"))
+                ? null
+                : reader.GetString(reader.GetOrdinal("transactioncode")),
+            reader.IsDBNull(reader.GetOrdinal("paymentlinkid"))
+                ? null
+                : reader.GetString(reader.GetOrdinal("paymentlinkid")),
+            reader.IsDBNull(reader.GetOrdinal("checkouturl"))
+                ? null
+                : reader.GetString(reader.GetOrdinal("checkouturl")),
+            reader.IsDBNull(reader.GetOrdinal("expiresat"))
+                ? null
+                : reader.GetDateTime(reader.GetOrdinal("expiresat")),
+            reader.IsDBNull(reader.GetOrdinal("paidat"))
+                ? null
+                : reader.GetDateTime(reader.GetOrdinal("paidat")),
+            reader.IsDBNull(reader.GetOrdinal("updatedat"))
+                ? null
+                : reader.GetDateTime(reader.GetOrdinal("updatedat")));
+    }
+
+    public async Task<int> ExpireStaleBookingsAsync(
+        DateTime now,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            WITH expired_payments AS (
+                UPDATE payment p
+                SET status = 'Expired',
+                    updatedat = now()
+                FROM booking b
+                WHERE b.id = p.bookingid
+                  AND b.status::text IN ('Pending', 'PendingPayment')
+                  AND b.expiresat IS NOT NULL
+                  AND b.expiresat <= @now
+                  AND p.status::text = 'Pending'
+                RETURNING p.id
+            ),
+            expired_bookings AS (
+                UPDATE booking
+                SET status = 'Expired'
+                WHERE status::text IN ('Pending', 'PendingPayment')
+                  AND expiresat IS NOT NULL
+                  AND expiresat <= @now
+                RETURNING id
+            )
+            SELECT COUNT(*) FROM expired_bookings;
+            """;
+
+        await using var command = _dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("now", now);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return Convert.ToInt32(result);
     }
 
     public async Task<bool> UpdatePayOSPaymentAsync(

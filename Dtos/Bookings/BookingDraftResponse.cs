@@ -21,6 +21,7 @@ public sealed record BookingDraftResponse(
     decimal TotalPrice,
     IReadOnlyList<BookingAddOnResponse> AddOns,
     string? Note,
+    DateTime ExpiresAt,
     string NextAction);
 
 public sealed record BookingAddOnResponse(

@@ -18,6 +18,8 @@ builder.Services.Configure<WelcomeEmailOptions>(
     builder.Configuration.GetSection(WelcomeEmailOptions.SectionName));
 builder.Services.Configure<PayOSOptions>(
     builder.Configuration.GetSection(PayOSOptions.SectionName));
+builder.Services.Configure<BookingOptions>(
+    builder.Configuration.GetSection(BookingOptions.SectionName));
 
 var jwtOptions = builder.Configuration
     .GetSection(JwtOptions.SectionName)

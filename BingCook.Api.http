@@ -77,3 +77,22 @@ Accept: application/json
   "customerEmail": "jane@example.com",
   "customerPhone": "+84901234567"
 }
+
+###
+
+GET {{BingCook.Api_HostAddress}}/api/bookings/{{bookingId}}/status
+Authorization: Bearer {{authToken}}
+Accept: application/json
+
+###
+
+POST {{BingCook.Api_HostAddress}}/api/bookings/{{bookingId}}/repay
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "customerName": "Jane Cook",
+  "customerEmail": "jane@example.com",
+  "customerPhone": "+84901234567"
+}
