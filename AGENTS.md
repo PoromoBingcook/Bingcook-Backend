@@ -12,6 +12,23 @@ Muc tieu file nay: giup dev/agent moi doc nhanh kien truc backend, biet luong re
 - Auth: JWT Bearer + BCrypt password hash.
 - API docs: Swagger bat trong Development.
 
+## Cap nhat gan day
+
+- Loi dang ky `NpgsqlConnector.SetupEncryption` da duoc trace ve root cause: app dung PostgreSQL provider `Npgsql`, nhung connection string tro SQL Server port `1433`.
+- Da doi runtime DB sang SQL Server:
+  - Them package `Microsoft.Data.SqlClient`.
+  - Them `Data/SqlConnectionFactory.cs`.
+  - Them `Data/SqlServerUserRepository.cs` cho auth/register/login.
+  - Them `Data/SqlServerProductRepository.cs` cho product list/detail.
+  - Them `Data/SqlServerBookingRepository.cs` cho booking draft/checkout/PayOS update.
+  - `Program.cs` DI sang `SqlServer*Repository`.
+  - `appsettings.json` doi connection string sang format `Server=host,1433;Database=...;User Id=...;Password=...;Encrypt=True;TrustServerCertificate=True`.
+- Cac `Postgres*Repository` cu van con trong repo de tham khao, nhung runtime hien tai khong dung.
+- Sau khi sua provider/config, phai stop process API cu va chay lai `dotnet run --project BingCook.Api.csproj`; neu khong, binary cu van co the nem loi `Npgsql`.
+- Verify da chay:
+  - `dotnet build BingCook.Api.csproj -o C:\tmp\bingcook-build /p:UseAppHost=false` pass.
+  - `dotnet test BingCook.Api.Tests\BingCook.Api.Tests.csproj --no-restore -o C:\tmp\bingcook-test-build /p:UseAppHost=false` pass.
+
 ## Kien truc lop
 
 ```text
@@ -301,4 +318,5 @@ Khi them logic service, uu tien test service bang fake repository/sender nhu pat
 - Checkout PayOS tao PayOS link, payment status `Pending`, booking status `PendingPayment`.
 - PayOS success update payment `Success`, booking `Paid`; cancel update ca hai ve `Cancelled`.
 - Schema SQL ngoai project can sync voi repository truoc khi deploy.
+
 
