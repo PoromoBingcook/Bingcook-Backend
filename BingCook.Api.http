@@ -96,3 +96,44 @@ Accept: application/json
   "customerEmail": "jane@example.com",
   "customerPhone": "+84901234567"
 }
+
+###
+
+POST {{BingCook.Api_HostAddress}}/api/chat/conversations
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "propertyId": "11111111-1111-1111-1111-111111111111",
+  "bookingId": null
+}
+
+###
+
+GET {{BingCook.Api_HostAddress}}/api/chat/conversations
+Authorization: Bearer {{authToken}}
+Accept: application/json
+
+###
+
+GET {{BingCook.Api_HostAddress}}/api/chat/conversations/{{conversationId}}/messages?take=50
+Authorization: Bearer {{authToken}}
+Accept: application/json
+
+###
+
+POST {{BingCook.Api_HostAddress}}/api/chat/conversations/{{conversationId}}/messages
+Authorization: Bearer {{authToken}}
+Content-Type: application/json
+Accept: application/json
+
+{
+  "body": "Hi, is early check-in available?"
+}
+
+###
+
+POST {{BingCook.Api_HostAddress}}/api/chat/conversations/{{conversationId}}/read
+Authorization: Bearer {{authToken}}
+Accept: application/json
