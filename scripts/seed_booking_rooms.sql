@@ -34,6 +34,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_payment_transactioncode
     ON payment(transactioncode)
     WHERE transactioncode IS NOT NULL;
 
+
 INSERT INTO propertytype (id, name)
 VALUES
     ('01111111-1111-1111-1111-111111111111', 'Hotel'),
