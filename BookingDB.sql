@@ -81,6 +81,43 @@ BEGIN
 END;
 GO
 
+IF OBJECT_ID(N'dbo.SavedProperty', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.SavedProperty (
+        UserId UNIQUEIDENTIFIER NOT NULL,
+        PropertyId UNIQUEIDENTIFIER NOT NULL,
+        CreatedAt DATETIME2 NOT NULL CONSTRAINT DF_SavedProperty_CreatedAt DEFAULT SYSUTCDATETIME(),
+        CONSTRAINT PK_SavedProperty PRIMARY KEY (UserId, PropertyId),
+        CONSTRAINT FK_SavedProperty_User FOREIGN KEY (UserId) REFERENCES dbo.[User](Id) ON DELETE CASCADE,
+        CONSTRAINT FK_SavedProperty_Property FOREIGN KEY (PropertyId) REFERENCES dbo.Property(Id) ON DELETE CASCADE
+    );
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE [name] = N'IX_SavedProperty_User_CreatedAt'
+      AND object_id = OBJECT_ID(N'dbo.SavedProperty')
+)
+BEGIN
+    CREATE INDEX IX_SavedProperty_User_CreatedAt
+        ON dbo.SavedProperty (UserId, CreatedAt DESC);
+END;
+GO
+
+IF NOT EXISTS (
+    SELECT 1
+    FROM sys.indexes
+    WHERE [name] = N'IX_SavedProperty_Property'
+      AND object_id = OBJECT_ID(N'dbo.SavedProperty')
+)
+BEGIN
+    CREATE INDEX IX_SavedProperty_Property
+        ON dbo.SavedProperty (PropertyId);
+END;
+GO
+
 IF OBJECT_ID(N'dbo.Room', N'U') IS NULL
 BEGIN
     CREATE TABLE dbo.Room (
