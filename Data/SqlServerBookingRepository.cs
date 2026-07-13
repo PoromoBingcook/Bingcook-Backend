@@ -621,6 +621,13 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         CompleteBookingCancellationCommand command,
         CancellationToken cancellationToken)
     {
+        const string lockPaymentsSql = """
+            SELECT Id
+            FROM dbo.Payment WITH (UPDLOCK, ROWLOCK)
+            WHERE BookingId = @bookingId
+            ORDER BY CreatedAt, Id;
+            """;
+
         const string updateBookingSql = """
             UPDATE dbo.Booking
             SET [Status] = N'Cancelled'
@@ -653,6 +660,18 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         await using var connection = _connectionFactory.CreateConnection();
         await connection.OpenAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await using var lockPayments = connection.CreateCommand();
+        lockPayments.Transaction = (SqlTransaction)transaction;
+        lockPayments.CommandText = lockPaymentsSql;
+        lockPayments.Parameters.Add("@bookingId", SqlDbType.UniqueIdentifier).Value = command.BookingId;
+        await using (var lockedPayments = await lockPayments.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await lockedPayments.ReadAsync(cancellationToken))
+            {
+                _ = lockedPayments.GetGuid(0);
+            }
+        }
 
         await using var updateBooking = connection.CreateCommand();
         updateBooking.Transaction = (SqlTransaction)transaction;

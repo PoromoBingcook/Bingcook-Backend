@@ -577,6 +577,14 @@ public sealed class PostgresBookingRepository : IBookingRepository
         CompleteBookingCancellationCommand command,
         CancellationToken cancellationToken)
     {
+        const string lockPaymentsSql = """
+            SELECT id
+            FROM payment
+            WHERE bookingid = @bookingId
+            ORDER BY createdat, id
+            FOR UPDATE;
+            """;
+
         const string updateBookingSql = """
             UPDATE booking
             SET status = 'Cancelled'
@@ -610,6 +618,18 @@ public sealed class PostgresBookingRepository : IBookingRepository
 
         await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
         await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await using var lockPayments = connection.CreateCommand();
+        lockPayments.Transaction = transaction;
+        lockPayments.CommandText = lockPaymentsSql;
+        lockPayments.Parameters.AddWithValue("bookingId", command.BookingId);
+        await using (var lockedPayments = await lockPayments.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await lockedPayments.ReadAsync(cancellationToken))
+            {
+                _ = lockedPayments.GetGuid(0);
+            }
+        }
 
         await using var updateBooking = connection.CreateCommand();
         updateBooking.Transaction = transaction;
