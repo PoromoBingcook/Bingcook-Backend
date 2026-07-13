@@ -30,6 +30,8 @@ public sealed class SqlServerProductRepository : IProductRepository
                 p.[Description] AS description,
                 p.City AS city,
                 p.[Address] AS address,
+                p.Latitude AS latitude,
+                p.Longitude AS longitude,
                 image.ImageUrl AS imageurl,
                 COALESCE(room_price.PricePerNight, 0) AS pricepernight,
                 COALESCE(review_summary.Rating, 0) AS rating,
@@ -157,6 +159,8 @@ public sealed class SqlServerProductRepository : IProductRepository
                 p.[Description] AS description,
                 p.City AS city,
                 p.[Address] AS address,
+                p.Latitude AS latitude,
+                p.Longitude AS longitude,
                 image.ImageUrl AS imageurl,
                 COALESCE(room_price.PricePerNight, 0) AS pricepernight,
                 COALESCE(review_summary.Rating, 0) AS rating,
@@ -408,7 +412,13 @@ public sealed class SqlServerProductRepository : IProductRepository
             reader.GetBoolean(reader.GetOrdinal("hasac")),
             reader.GetBoolean(reader.GetOrdinal("hasbreakfast")),
             reader.GetBoolean(reader.GetOrdinal("ispetallowed")),
-            reader.GetBoolean(reader.GetOrdinal("isselfcheckin")));
+            reader.GetBoolean(reader.GetOrdinal("isselfcheckin")),
+            reader.IsDBNull(reader.GetOrdinal("latitude"))
+                ? null
+                : reader.GetDecimal(reader.GetOrdinal("latitude")),
+            reader.IsDBNull(reader.GetOrdinal("longitude"))
+                ? null
+                : reader.GetDecimal(reader.GetOrdinal("longitude")));
     }
 
     private static IReadOnlyList<string> BuildRoomFeatures(int capacity)

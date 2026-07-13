@@ -8,6 +8,8 @@ public sealed record ProductListItemResponse(
     string Location,
     string City,
     string Address,
+    decimal? Latitude,
+    decimal? Longitude,
     string? ImageUrl,
     double Rating,
     int ReviewCount,

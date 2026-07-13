@@ -87,6 +87,8 @@ public sealed class ProductsController : ControllerBase
             $"{product.City}, {product.Address}",
             product.City,
             product.Address,
+            product.Latitude,
+            product.Longitude,
             product.ImageUrl,
             Math.Round(product.Rating, 1),
             product.ReviewCount,
