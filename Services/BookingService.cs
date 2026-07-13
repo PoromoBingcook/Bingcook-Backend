@@ -17,19 +17,22 @@ public sealed class BookingService : IBookingService
     private readonly IPayOSPaymentGateway _payOSPaymentGateway;
     private readonly BookingOptions _options;
     private readonly ILogger<BookingService> _logger;
+    private readonly TimeProvider _timeProvider;
 
     public BookingService(
         IBookingRepository bookingRepository,
         IPayOSPaymentGateway payOSPaymentGateway,
         INotificationRepository notificationRepository,
         IOptions<BookingOptions> options,
-        ILogger<BookingService> logger)
+        ILogger<BookingService> logger,
+        TimeProvider timeProvider)
     {
         _bookingRepository = bookingRepository;
         _payOSPaymentGateway = payOSPaymentGateway;
         _notificationRepository = notificationRepository;
         _options = options.Value;
         _logger = logger;
+        _timeProvider = timeProvider;
     }
 
     public async Task<BookingDraftOutcome> CreateDraftAsync(
@@ -87,7 +90,7 @@ public sealed class BookingService : IBookingService
             nights);
         var addOnSubtotal = addOns.Sum(addOn => addOn.TotalPrice);
         var totalPrice = roomSubtotal + addOnSubtotal;
-        var expiresAt = DateTime.UtcNow.Add(GetHoldDuration());
+        var expiresAt = _timeProvider.GetUtcNow().UtcDateTime.Add(GetHoldDuration());
 
         var bookingId = await _bookingRepository.CreateDraftAsync(
             new CreateBookingDraftCommand(
@@ -160,7 +163,8 @@ public sealed class BookingService : IBookingService
                 $"Booking cannot be checked out from status '{quote.Status}'.");
         }
 
-        if (quote.ExpiresAt is not null && quote.ExpiresAt <= DateTime.UtcNow)
+        if (quote.ExpiresAt is not null
+            && quote.ExpiresAt <= _timeProvider.GetUtcNow().UtcDateTime)
         {
             return BookingCheckoutOutcome.ValidationError(
                 "Booking draft has expired. Please create a new booking draft.");
@@ -246,6 +250,64 @@ public sealed class BookingService : IBookingService
         return true;
     }
 
+    public async Task<BookingCancellationOutcome> CancelAsync(
+        Guid bookingId,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        var candidate = await _bookingRepository.GetCancellationCandidateAsync(
+            bookingId,
+            userId,
+            cancellationToken);
+        if (candidate is null)
+        {
+            return BookingCancellationOutcome.NotFound("Booking not found.");
+        }
+
+        if (candidate.BookingStatus is not (
+            BookingStatuses.Pending
+            or BookingStatuses.PendingPayment
+            or BookingStatuses.Confirmed
+            or BookingStatuses.Paid))
+        {
+            return BookingCancellationOutcome.Conflict(
+                "This booking can no longer be cancelled.");
+        }
+
+        var localCheckIn = candidate.CheckIn.ToDateTime(
+            new TimeOnly(14, 0),
+            DateTimeKind.Unspecified);
+        var checkInInstant = new DateTimeOffset(
+            localCheckIn,
+            TimeSpan.FromHours(7));
+        var cancellationDeadline = checkInInstant.AddHours(-24);
+        if (_timeProvider.GetUtcNow() >= cancellationDeadline)
+        {
+            return BookingCancellationOutcome.Conflict(
+                "Bookings must be cancelled at least 24 hours before the 14:00 check-in time.");
+        }
+
+        var result = await _bookingRepository.CompleteCancellationAsync(
+            new CompleteBookingCancellationCommand(
+                bookingId,
+                userId,
+                candidate.BookingStatus),
+            cancellationToken);
+        if (result is null)
+        {
+            return BookingCancellationOutcome.Conflict(
+                "The booking changed while cancellation was being processed. Refresh and try again.");
+        }
+
+        await CreateCheckoutNotificationAsync(
+            userId,
+            "Booking Cancelled",
+            $"Your booking at {candidate.PropertyName} has been cancelled.",
+            cancellationToken);
+
+        return BookingCancellationOutcome.Success(result);
+    }
+
     private static string? Validate(BookingSelectionCommand command)
     {
         if (command.PropertyId == Guid.Empty)
@@ -320,7 +382,7 @@ public sealed class BookingService : IBookingService
     private Task<int> ExpireStaleBookingsAsync(CancellationToken cancellationToken)
     {
         return _bookingRepository.ExpireStaleBookingsAsync(
-            DateTime.UtcNow,
+            _timeProvider.GetUtcNow().UtcDateTime,
             cancellationToken);
     }
 

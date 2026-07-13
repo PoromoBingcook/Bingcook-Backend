@@ -41,6 +41,7 @@ builder.Services.AddScoped<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IWelcomeEmailSender, SmtpWelcomeEmailSender>();
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IBookingService, BookingService>();
 builder.Services.AddScoped<IChatService, ChatService>();
 builder.Services.AddHttpClient<IPayOSPaymentGateway, PayOSPaymentGateway>();

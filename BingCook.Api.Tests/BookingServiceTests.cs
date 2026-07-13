@@ -192,6 +192,111 @@ public sealed class BookingServiceTests
     }
 
     [Fact]
+    public async Task CancelAsync_CancelsPaidBookingWithoutChangingSuccessfulPayment()
+    {
+        var bookingId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var userId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var notificationRepository = new FakeNotificationRepository();
+        var repository = new FakeBookingRepository
+        {
+            CancellationCandidate = new BookingCancellationCandidate(
+                bookingId,
+                userId,
+                "BingCook Central Hotel",
+                new DateOnly(2026, 7, 16),
+                BookingStatuses.Paid,
+                PaymentStatuses.Success),
+            CancellationResult = new BookingCancellationResult(
+                bookingId,
+                BookingStatuses.Cancelled,
+                PaymentStatuses.Success,
+                "Booking cancelled. Your successful payment is unchanged; contact support about refunds.")
+        };
+        var service = CreateService(
+            repository,
+            new FakePayOSPaymentGateway(),
+            notificationRepository,
+            new FixedTimeProvider(new DateTimeOffset(2026, 7, 14, 0, 0, 0, TimeSpan.Zero)));
+
+        var outcome = await service.CancelAsync(
+            bookingId,
+            userId,
+            CancellationToken.None);
+
+        Assert.Equal(BookingCancellationOutcomeStatus.Success, outcome.Status);
+        Assert.Equal(BookingStatuses.Cancelled, outcome.Result?.BookingStatus);
+        Assert.Equal(PaymentStatuses.Success, outcome.Result?.PaymentStatus);
+        var notification = Assert.Single(notificationRepository.Created);
+        Assert.Equal("Booking Cancelled", notification.Title);
+    }
+
+    [Fact]
+    public async Task CancelAsync_CancelsPendingPaymentTogetherWithBooking()
+    {
+        var bookingId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var userId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var repository = new FakeBookingRepository
+        {
+            CancellationCandidate = new BookingCancellationCandidate(
+                bookingId,
+                userId,
+                "BingCook Central Hotel",
+                new DateOnly(2026, 7, 16),
+                BookingStatuses.PendingPayment,
+                PaymentStatuses.Pending),
+            CancellationResult = new BookingCancellationResult(
+                bookingId,
+                BookingStatuses.Cancelled,
+                PaymentStatuses.Cancelled,
+                "Booking cancelled.")
+        };
+        var service = CreateService(
+            repository,
+            new FakePayOSPaymentGateway(),
+            timeProvider: new FixedTimeProvider(
+                new DateTimeOffset(2026, 7, 14, 0, 0, 0, TimeSpan.Zero)));
+
+        var outcome = await service.CancelAsync(
+            bookingId,
+            userId,
+            CancellationToken.None);
+
+        Assert.Equal(BookingCancellationOutcomeStatus.Success, outcome.Status);
+        Assert.Equal(PaymentStatuses.Cancelled, outcome.Result?.PaymentStatus);
+    }
+
+    [Fact]
+    public async Task CancelAsync_ReturnsConflictAtOrAfterTwentyFourHourCutoff()
+    {
+        var bookingId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var userId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var repository = new FakeBookingRepository
+        {
+            CancellationCandidate = new BookingCancellationCandidate(
+                bookingId,
+                userId,
+                "BingCook Central Hotel",
+                new DateOnly(2026, 7, 16),
+                BookingStatuses.Paid,
+                PaymentStatuses.Success)
+        };
+        var service = CreateService(
+            repository,
+            new FakePayOSPaymentGateway(),
+            timeProvider: new FixedTimeProvider(
+                new DateTimeOffset(2026, 7, 15, 7, 0, 0, TimeSpan.Zero)));
+
+        var outcome = await service.CancelAsync(
+            bookingId,
+            userId,
+            CancellationToken.None);
+
+        Assert.Equal(BookingCancellationOutcomeStatus.Conflict, outcome.Status);
+        Assert.Contains("24 hours", outcome.Error);
+        Assert.Equal(0, repository.CompleteCancellationCalls);
+    }
+
+    [Fact]
     public void BookingStatuses_DoNotAllowPaidToDowngrade()
     {
         Assert.False(BookingStatuses.CanTransition(
@@ -205,14 +310,16 @@ public sealed class BookingServiceTests
     private static BookingService CreateService(
         IBookingRepository repository,
         IPayOSPaymentGateway gateway,
-        INotificationRepository? notificationRepository = null)
+        INotificationRepository? notificationRepository = null,
+        TimeProvider? timeProvider = null)
     {
         return new BookingService(
             repository,
             gateway,
             notificationRepository ?? new FakeNotificationRepository(),
             Options.Create(new BookingOptions { HoldMinutes = 15 }),
-            NullLogger<BookingService>.Instance);
+            NullLogger<BookingService>.Instance,
+            timeProvider ?? TimeProvider.System);
     }
 
     private static BookingCheckoutCommand CreatePayOSCheckoutCommand(
@@ -256,6 +363,12 @@ public sealed class BookingServiceTests
         public ActiveBookingPayment? ActivePayment { get; init; }
 
         public PayOSPaymentUpdateResult? PayOSUpdateResult { get; init; }
+
+        public BookingCancellationCandidate? CancellationCandidate { get; init; }
+
+        public BookingCancellationResult? CancellationResult { get; init; }
+
+        public int CompleteCancellationCalls { get; private set; }
 
         public Task<BookingRoomQuote?> GetRoomQuoteAsync(
             Guid propertyId,
@@ -317,6 +430,22 @@ public sealed class BookingServiceTests
             CancellationToken cancellationToken)
         {
             return Task.FromResult(PayOSUpdateResult);
+        }
+
+        public Task<BookingCancellationCandidate?> GetCancellationCandidateAsync(
+            Guid bookingId,
+            Guid userId,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(CancellationCandidate);
+        }
+
+        public Task<BookingCancellationResult?> CompleteCancellationAsync(
+            CompleteBookingCancellationCommand command,
+            CancellationToken cancellationToken)
+        {
+            CompleteCancellationCalls++;
+            return Task.FromResult(CancellationResult);
         }
     }
 
@@ -396,5 +525,17 @@ public sealed class BookingServiceTests
         {
             return Task.FromResult(0);
         }
+    }
+
+    private sealed class FixedTimeProvider : TimeProvider
+    {
+        private readonly DateTimeOffset _utcNow;
+
+        public FixedTimeProvider(DateTimeOffset utcNow)
+        {
+            _utcNow = utcNow;
+        }
+
+        public override DateTimeOffset GetUtcNow() => _utcNow;
     }
 }
