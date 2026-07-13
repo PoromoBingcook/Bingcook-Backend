@@ -13,15 +13,21 @@ public sealed class AuthService : IAuthService
     private readonly IUserRepository _userRepository;
     private readonly IPasswordHasher _passwordHasher;
     private readonly IJwtTokenService _jwtTokenService;
+    private readonly IWelcomeEmailSender _welcomeEmailSender;
+    private readonly ILogger<AuthService> _logger;
 
     public AuthService(
         IUserRepository userRepository,
         IPasswordHasher passwordHasher,
-        IJwtTokenService jwtTokenService)
+        IJwtTokenService jwtTokenService,
+        IWelcomeEmailSender welcomeEmailSender,
+        ILogger<AuthService> logger)
     {
         _userRepository = userRepository;
         _passwordHasher = passwordHasher;
         _jwtTokenService = jwtTokenService;
+        _welcomeEmailSender = welcomeEmailSender;
+        _logger = logger;
     }
 
     public async Task<AuthOutcome> RegisterAsync(
@@ -54,6 +60,8 @@ public sealed class AuthService : IAuthService
                 passwordHash,
                 CustomerRole),
             cancellationToken);
+
+        await SendWelcomeEmailAsync(user, cancellationToken);
 
         return AuthOutcome.Success(CreateResponse(user));
     }
@@ -92,5 +100,22 @@ public sealed class AuthService : IAuthService
             user.Role);
 
         return new AuthResponse(response, token);
+    }
+
+    private async Task SendWelcomeEmailAsync(
+        UserAccount user,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _welcomeEmailSender.SendWelcomeEmailAsync(user, cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                error,
+                "Unable to send welcome email for registered user {UserId}.",
+                user.Id);
+        }
     }
 }
