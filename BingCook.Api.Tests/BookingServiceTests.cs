@@ -130,6 +130,68 @@ public sealed class BookingServiceTests
     }
 
     [Fact]
+    public async Task UpdatePayOSPaymentAsync_CreatesOneSuccessfulBookingNotification()
+    {
+        var userId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var notificationRepository = new FakeNotificationRepository();
+        var repository = new FakeBookingRepository
+        {
+            PayOSUpdateResult = new PayOSPaymentUpdateResult(
+                userId,
+                "BingCook Central Hotel",
+                PaymentStatuses.Success,
+                BookingStatuses.Paid,
+                true)
+        };
+        var service = CreateService(
+            repository,
+            new FakePayOSPaymentGateway(),
+            notificationRepository);
+
+        var found = await service.UpdatePayOSPaymentAsync(
+            new PayOSPaymentUpdateCommand(
+                "123456789",
+                PaymentStatuses.Success,
+                BookingStatuses.Paid),
+            CancellationToken.None);
+
+        Assert.True(found);
+        var notification = Assert.Single(notificationRepository.Created);
+        Assert.Equal(userId, notification.UserId);
+        Assert.Equal("Booking Successful", notification.Title);
+        Assert.Contains("BingCook Central Hotel", notification.Message);
+    }
+
+    [Fact]
+    public async Task UpdatePayOSPaymentAsync_DoesNotDuplicateNotificationForNoOp()
+    {
+        var notificationRepository = new FakeNotificationRepository();
+        var repository = new FakeBookingRepository
+        {
+            PayOSUpdateResult = new PayOSPaymentUpdateResult(
+                Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                "BingCook Central Hotel",
+                PaymentStatuses.Success,
+                BookingStatuses.Paid,
+                false)
+        };
+        var service = CreateService(
+            repository,
+            new FakePayOSPaymentGateway(),
+            notificationRepository);
+
+        var found = await service.UpdatePayOSPaymentAsync(
+            new PayOSPaymentUpdateCommand(
+                "123456789",
+                PaymentStatuses.Success,
+                BookingStatuses.Paid),
+            CancellationToken.None);
+
+        Assert.True(found);
+        Assert.Empty(notificationRepository.Created);
+    }
+
+    [Fact]
     public void BookingStatuses_DoNotAllowPaidToDowngrade()
     {
         Assert.False(BookingStatuses.CanTransition(
@@ -193,6 +255,8 @@ public sealed class BookingServiceTests
 
         public ActiveBookingPayment? ActivePayment { get; init; }
 
+        public PayOSPaymentUpdateResult? PayOSUpdateResult { get; init; }
+
         public Task<BookingRoomQuote?> GetRoomQuoteAsync(
             Guid propertyId,
             Guid roomId,
@@ -248,11 +312,11 @@ public sealed class BookingServiceTests
             return Task.FromResult(0);
         }
 
-        public Task<bool> UpdatePayOSPaymentAsync(
+        public Task<PayOSPaymentUpdateResult?> UpdatePayOSPaymentAsync(
             PayOSPaymentUpdateCommand command,
             CancellationToken cancellationToken)
         {
-            return Task.FromResult(true);
+            return Task.FromResult(PayOSUpdateResult);
         }
     }
 

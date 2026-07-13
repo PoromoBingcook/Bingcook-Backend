@@ -468,7 +468,7 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<bool> UpdatePayOSPaymentAsync(
+    public async Task<PayOSPaymentUpdateResult?> UpdatePayOSPaymentAsync(
         PayOSPaymentUpdateCommand command,
         CancellationToken cancellationToken)
     {
@@ -476,9 +476,12 @@ public sealed class SqlServerBookingRepository : IBookingRepository
             SELECT TOP (1)
                 p.BookingId,
                 p.[Status] AS paymentstatus,
-                b.[Status] AS bookingstatus
-            FROM dbo.Payment p
+                b.[Status] AS bookingstatus,
+                b.UserId AS userid,
+                property.[Name] AS propertyname
+            FROM dbo.Payment p WITH (UPDLOCK, ROWLOCK)
             INNER JOIN dbo.Booking b ON b.Id = p.BookingId
+            INNER JOIN dbo.Property property ON property.Id = b.PropertyId
             WHERE p.TransactionCode = @transactionCode
               AND p.Provider = N'PayOS';
             """;
@@ -514,19 +517,29 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         if (!await reader.ReadAsync(cancellationToken))
         {
             await transaction.RollbackAsync(cancellationToken);
-            return false;
+            return null;
         }
 
         var bookingId = reader.GetGuid(reader.GetOrdinal("BookingId"));
         var currentPaymentStatus = reader.GetString(reader.GetOrdinal("paymentstatus"));
         var currentBookingStatus = reader.GetString(reader.GetOrdinal("bookingstatus"));
+        var userId = reader.GetGuid(reader.GetOrdinal("userid"));
+        var propertyName = reader.GetString(reader.GetOrdinal("propertyname"));
         await reader.CloseAsync();
 
-        if (!PaymentStatuses.CanTransition(currentPaymentStatus, command.PaymentStatus)
+        var statusUnchanged = currentPaymentStatus == command.PaymentStatus
+            && currentBookingStatus == command.BookingStatus;
+        if (statusUnchanged
+            || !PaymentStatuses.CanTransition(currentPaymentStatus, command.PaymentStatus)
             || !BookingStatuses.CanTransition(currentBookingStatus, command.BookingStatus))
         {
             await transaction.CommitAsync(cancellationToken);
-            return true;
+            return new PayOSPaymentUpdateResult(
+                userId,
+                propertyName,
+                currentPaymentStatus,
+                currentBookingStatus,
+                false);
         }
 
         await using var updatePayment = connection.CreateCommand();
@@ -546,11 +559,16 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         if (updatedRows == 0)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return false;
+            return null;
         }
 
         await transaction.CommitAsync(cancellationToken);
-        return true;
+        return new PayOSPaymentUpdateResult(
+            userId,
+            propertyName,
+            command.PaymentStatus,
+            command.BookingStatus,
+            true);
     }
 
     private static void AddCheckoutParameters(

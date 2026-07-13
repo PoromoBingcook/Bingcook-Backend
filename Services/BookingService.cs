@@ -220,11 +220,30 @@ public sealed class BookingService : IBookingService
             cancellationToken);
     }
 
-    public Task<bool> UpdatePayOSPaymentAsync(
+    public async Task<bool> UpdatePayOSPaymentAsync(
         PayOSPaymentUpdateCommand command,
         CancellationToken cancellationToken)
     {
-        return _bookingRepository.UpdatePayOSPaymentAsync(command, cancellationToken);
+        var result = await _bookingRepository.UpdatePayOSPaymentAsync(
+            command,
+            cancellationToken);
+        if (result is null)
+        {
+            return false;
+        }
+
+        if (result.StateChanged
+            && result.PaymentStatus == PaymentStatuses.Success
+            && result.BookingStatus == BookingStatuses.Paid)
+        {
+            await CreateCheckoutNotificationAsync(
+                result.UserId,
+                "Booking Successful",
+                $"Your booking at {result.PropertyName} has been paid and confirmed.",
+                cancellationToken);
+        }
+
+        return true;
     }
 
     private static string? Validate(BookingSelectionCommand command)

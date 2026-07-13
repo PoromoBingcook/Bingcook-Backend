@@ -424,41 +424,106 @@ public sealed class PostgresBookingRepository : IBookingRepository
         return Convert.ToInt32(result);
     }
 
-    public async Task<bool> UpdatePayOSPaymentAsync(
+    public async Task<PayOSPaymentUpdateResult?> UpdatePayOSPaymentAsync(
         PayOSPaymentUpdateCommand command,
         CancellationToken cancellationToken)
     {
-        const string sql = """
-            WITH updated_payment AS (
-                UPDATE payment
-                SET
-                    status = @paymentStatus,
-                    paidat = CASE
-                        WHEN @paymentStatus = 'Success' THEN COALESCE(paidat, now())
-                        ELSE paidat
-                    END,
-                    updatedat = now()
-                WHERE transactioncode = @transactionCode
-                  AND provider = 'PayOS'
-                RETURNING bookingid
-            ),
-            updated_booking AS (
-                UPDATE booking b
-                SET status = @bookingStatus
-                FROM updated_payment p
-                WHERE b.id = p.bookingid
-                RETURNING b.id
-            )
-            SELECT EXISTS (SELECT 1 FROM updated_booking);
+        const string findBookingSql = """
+            SELECT
+                payment.bookingid,
+                payment.status::text AS paymentstatus,
+                booking.status::text AS bookingstatus,
+                booking.userid,
+                property.name AS propertyname
+            FROM payment
+            INNER JOIN booking ON booking.id = payment.bookingid
+            INNER JOIN property ON property.id = booking.propertyid
+            WHERE payment.transactioncode = @transactionCode
+              AND payment.provider = 'PayOS'
+            LIMIT 1
+            FOR UPDATE OF payment;
             """;
 
-        await using var dbCommand = _dataSource.CreateCommand(sql);
-        dbCommand.Parameters.AddWithValue("transactionCode", command.TransactionCode);
-        dbCommand.Parameters.AddWithValue("paymentStatus", command.PaymentStatus);
-        dbCommand.Parameters.AddWithValue("bookingStatus", command.BookingStatus);
+        const string updatePaymentSql = """
+            UPDATE payment
+            SET
+                status = @paymentStatus,
+                paidat = CASE
+                    WHEN @paymentStatus = 'Success' THEN COALESCE(paidat, now())
+                    ELSE paidat
+                END,
+                updatedat = now()
+            WHERE transactioncode = @transactionCode
+              AND provider = 'PayOS';
+            """;
 
-        var result = await dbCommand.ExecuteScalarAsync(cancellationToken);
-        return result is true;
+        const string updateBookingSql = """
+            UPDATE booking
+            SET status = @bookingStatus
+            WHERE id = @bookingId;
+            """;
+
+        await using var connection = await _dataSource.OpenConnectionAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+        await using var findBooking = connection.CreateCommand();
+        findBooking.Transaction = transaction;
+        findBooking.CommandText = findBookingSql;
+        findBooking.Parameters.AddWithValue("transactionCode", command.TransactionCode);
+        await using var reader = await findBooking.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        var bookingId = reader.GetGuid(reader.GetOrdinal("bookingid"));
+        var currentPaymentStatus = reader.GetString(reader.GetOrdinal("paymentstatus"));
+        var currentBookingStatus = reader.GetString(reader.GetOrdinal("bookingstatus"));
+        var userId = reader.GetGuid(reader.GetOrdinal("userid"));
+        var propertyName = reader.GetString(reader.GetOrdinal("propertyname"));
+        await reader.CloseAsync();
+
+        var statusUnchanged = currentPaymentStatus == command.PaymentStatus
+            && currentBookingStatus == command.BookingStatus;
+        if (statusUnchanged
+            || !PaymentStatuses.CanTransition(currentPaymentStatus, command.PaymentStatus)
+            || !BookingStatuses.CanTransition(currentBookingStatus, command.BookingStatus))
+        {
+            await transaction.CommitAsync(cancellationToken);
+            return new PayOSPaymentUpdateResult(
+                userId,
+                propertyName,
+                currentPaymentStatus,
+                currentBookingStatus,
+                false);
+        }
+
+        await using var updatePayment = connection.CreateCommand();
+        updatePayment.Transaction = transaction;
+        updatePayment.CommandText = updatePaymentSql;
+        updatePayment.Parameters.AddWithValue("transactionCode", command.TransactionCode);
+        updatePayment.Parameters.AddWithValue("paymentStatus", command.PaymentStatus);
+        await updatePayment.ExecuteNonQueryAsync(cancellationToken);
+
+        await using var updateBooking = connection.CreateCommand();
+        updateBooking.Transaction = transaction;
+        updateBooking.CommandText = updateBookingSql;
+        updateBooking.Parameters.AddWithValue("bookingId", bookingId);
+        updateBooking.Parameters.AddWithValue("bookingStatus", command.BookingStatus);
+        var updatedRows = await updateBooking.ExecuteNonQueryAsync(cancellationToken);
+        if (updatedRows == 0)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        await transaction.CommitAsync(cancellationToken);
+        return new PayOSPaymentUpdateResult(
+            userId,
+            propertyName,
+            command.PaymentStatus,
+            command.BookingStatus,
+            true);
     }
 
     private static void AddDate(NpgsqlCommand command, string name, DateOnly value)

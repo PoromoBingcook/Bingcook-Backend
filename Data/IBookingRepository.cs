@@ -38,7 +38,7 @@ public interface IBookingRepository
         DateTime now,
         CancellationToken cancellationToken);
 
-    Task<bool> UpdatePayOSPaymentAsync(
+    Task<PayOSPaymentUpdateResult?> UpdatePayOSPaymentAsync(
         PayOSPaymentUpdateCommand command,
         CancellationToken cancellationToken);
 }

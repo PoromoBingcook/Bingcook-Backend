@@ -101,3 +101,10 @@ public sealed record PayOSPaymentUpdateCommand(
     string TransactionCode,
     string PaymentStatus,
     string BookingStatus);
+
+public sealed record PayOSPaymentUpdateResult(
+    Guid UserId,
+    string PropertyName,
+    string PaymentStatus,
+    string BookingStatus,
+    bool StateChanged);
