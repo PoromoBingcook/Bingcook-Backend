@@ -1,0 +1,17 @@
+bin/
+obj/
+**/bin/
+**/obj/
+
+.git/
+.vs/
+.vscode/
+.idea/
+
+TestResults/
+coverage/
+
+.env
+.env.*
+*.local.json
+appsettings.*.local.json
