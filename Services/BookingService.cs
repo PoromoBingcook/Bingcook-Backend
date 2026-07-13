@@ -13,6 +13,7 @@ public sealed class BookingService : IBookingService
     private const string PayOSMethod = "PayOS";
 
     private readonly IBookingRepository _bookingRepository;
+    private readonly INotificationRepository _notificationRepository;
     private readonly IPayOSPaymentGateway _payOSPaymentGateway;
     private readonly BookingOptions _options;
     private readonly ILogger<BookingService> _logger;
@@ -20,11 +21,13 @@ public sealed class BookingService : IBookingService
     public BookingService(
         IBookingRepository bookingRepository,
         IPayOSPaymentGateway payOSPaymentGateway,
+        INotificationRepository notificationRepository,
         IOptions<BookingOptions> options,
         ILogger<BookingService> logger)
     {
         _bookingRepository = bookingRepository;
         _payOSPaymentGateway = payOSPaymentGateway;
+        _notificationRepository = notificationRepository;
         _options = options.Value;
         _logger = logger;
     }
@@ -332,6 +335,12 @@ public sealed class BookingService : IBookingService
             return BookingCheckoutOutcome.NotFound("Booking draft not found.");
         }
 
+        await CreateCheckoutNotificationAsync(
+            command.UserId,
+            "Booking Confirmed",
+            $"Your stay at {quote.PropertyName} is confirmed. Please pay at the property when you arrive.",
+            cancellationToken);
+
         return BookingCheckoutOutcome.Success(
             new BookingCheckoutResult(
                 quote.BookingId,
@@ -397,6 +406,12 @@ public sealed class BookingService : IBookingService
             return BookingCheckoutOutcome.NotFound("Booking draft not found.");
         }
 
+        await CreateCheckoutNotificationAsync(
+            command.UserId,
+            "Payment Pending",
+            $"Your booking at {quote.PropertyName} is reserved. Complete PayOS payment to finish your booking.",
+            cancellationToken);
+
         return BookingCheckoutOutcome.Success(
             new BookingCheckoutResult(
                 quote.BookingId,
@@ -410,6 +425,27 @@ public sealed class BookingService : IBookingService
                 paymentLink.QrCode,
                 quote.ExpiresAt,
                 "Open checkoutUrl to pay with PayOS."));
+    }
+
+    private async Task CreateCheckoutNotificationAsync(
+        Guid userId,
+        string title,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _notificationRepository.CreateAsync(
+                new CreateNotificationCommand(userId, title, message),
+                cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                error,
+                "Unable to create checkout notification for user {UserId}.",
+                userId);
+        }
     }
 
     private static string? NormalizePaymentMethod(string paymentMethod)
