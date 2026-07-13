@@ -36,6 +36,7 @@ builder.Services.AddScoped<IUserRepository, SqlServerUserRepository>();
 builder.Services.AddScoped<IProductRepository, SqlServerProductRepository>();
 builder.Services.AddScoped<IBookingRepository, SqlServerBookingRepository>();
 builder.Services.AddScoped<IChatRepository, SqlServerChatRepository>();
+builder.Services.AddScoped<INotificationRepository, SqlServerNotificationRepository>();
 builder.Services.AddScoped<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IWelcomeEmailSender, SmtpWelcomeEmailSender>();

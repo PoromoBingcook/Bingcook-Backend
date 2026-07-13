@@ -65,6 +65,71 @@ public sealed class BookingServiceTests
     }
 
     [Fact]
+    public async Task CheckoutAsync_CreatesConfirmedNotificationForPayAtProperty()
+    {
+        var bookingId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var userId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var notificationRepository = new FakeNotificationRepository();
+        var repository = new FakeBookingRepository
+        {
+            CheckoutQuote = CreateCheckoutQuote(
+                BookingStatuses.Pending,
+                DateTime.UtcNow.AddMinutes(10),
+                bookingId)
+        };
+        var service = CreateService(
+            repository,
+            new FakePayOSPaymentGateway(),
+            notificationRepository);
+
+        var result = await service.CheckoutAsync(
+            new BookingCheckoutCommand(
+                userId,
+                bookingId,
+                "PayAtProperty",
+                "Jane Cook",
+                "jane@example.com",
+                "+84901234567",
+                null),
+            CancellationToken.None);
+
+        Assert.Equal(BookingCheckoutOutcomeStatus.Success, result.Status);
+        var notification = Assert.Single(notificationRepository.Created);
+        Assert.Equal(userId, notification.UserId);
+        Assert.Equal("Booking Confirmed", notification.Title);
+        Assert.Contains("BingCook Central Hotel", notification.Message);
+    }
+
+    [Fact]
+    public async Task CheckoutAsync_CreatesPendingPaymentNotificationForPayOS()
+    {
+        var bookingId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var userId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var notificationRepository = new FakeNotificationRepository();
+        var repository = new FakeBookingRepository
+        {
+            CheckoutQuote = CreateCheckoutQuote(
+                BookingStatuses.Pending,
+                DateTime.UtcNow.AddMinutes(10),
+                bookingId)
+        };
+        var service = CreateService(
+            repository,
+            new FakePayOSPaymentGateway(),
+            notificationRepository);
+
+        var result = await service.CheckoutAsync(
+            CreatePayOSCheckoutCommand(bookingId),
+            CancellationToken.None);
+
+        Assert.Equal(BookingCheckoutOutcomeStatus.Success, result.Status);
+        var notification = Assert.Single(notificationRepository.Created);
+        Assert.Equal(userId, notification.UserId);
+        Assert.Equal("Payment Pending", notification.Title);
+        Assert.Contains("BingCook Central Hotel", notification.Message);
+    }
+
+    [Fact]
     public void BookingStatuses_DoNotAllowPaidToDowngrade()
     {
         Assert.False(BookingStatuses.CanTransition(
@@ -77,11 +142,13 @@ public sealed class BookingServiceTests
 
     private static BookingService CreateService(
         IBookingRepository repository,
-        IPayOSPaymentGateway gateway)
+        IPayOSPaymentGateway gateway,
+        INotificationRepository? notificationRepository = null)
     {
         return new BookingService(
             repository,
             gateway,
+            notificationRepository ?? new FakeNotificationRepository(),
             Options.Create(new BookingOptions { HoldMinutes = 15 }),
             NullLogger<BookingService>.Instance);
     }
@@ -229,6 +296,41 @@ public sealed class BookingServiceTests
             string signature)
         {
             return true;
+        }
+    }
+
+    private sealed class FakeNotificationRepository : INotificationRepository
+    {
+        public List<CreateNotificationCommand> Created { get; } = new();
+
+        public Task<IReadOnlyList<UserNotification>> GetByUserIdAsync(
+            Guid userId,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<IReadOnlyList<UserNotification>>(Array.Empty<UserNotification>());
+        }
+
+        public Task CreateAsync(
+            CreateNotificationCommand command,
+            CancellationToken cancellationToken)
+        {
+            Created.Add(command);
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> MarkReadAsync(
+            Guid notificationId,
+            Guid userId,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(true);
+        }
+
+        public Task<int> MarkAllReadAsync(
+            Guid userId,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(0);
         }
     }
 }
