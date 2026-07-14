@@ -152,6 +152,24 @@ public sealed class ReviewsControllerTests
         Assert.Null(repository.LastUserId);
     }
 
+    [Fact]
+    public void ReviewPersistence_IsRegisteredAndConstrainedForSupportedProviders()
+    {
+        var root = FindRepositoryRoot();
+        var program = File.ReadAllText(Path.Combine(root, "Program.cs"));
+        var sqlServerSchema = File.ReadAllText(Path.Combine(root, "BookingDB.sql"));
+        var postgresSchema = File.ReadAllText(Path.Combine(
+            root,
+            "scripts",
+            "add_review_constraints_postgres.sql"));
+
+        Assert.Contains(
+            "AddScoped<IReviewRepository, SqlServerReviewRepository>()",
+            program);
+        Assert.Contains("UX_Review_UserId_PropertyId", sqlServerSchema);
+        Assert.Contains("ux_review_userid_propertyid", postgresSchema);
+    }
+
     private static ReviewsController CreateController(
         IReviewRepository repository,
         string? userId = null)
@@ -179,6 +197,23 @@ public sealed class ReviewsControllerTests
             rating,
             comment,
             CreatedAt);
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null)
+        {
+            if (File.Exists(Path.Combine(directory.FullName, "Program.cs"))
+                && File.Exists(Path.Combine(directory.FullName, "BookingDB.sql")))
+            {
+                return directory.FullName;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new DirectoryNotFoundException("Unable to locate backend repository root.");
     }
 
     private sealed class FakeReviewRepository : IReviewRepository

@@ -34,6 +34,7 @@ builder.Services.AddSingleton(_ =>
 
 builder.Services.AddScoped<IUserRepository, SqlServerUserRepository>();
 builder.Services.AddScoped<IProductRepository, SqlServerProductRepository>();
+builder.Services.AddScoped<IReviewRepository, SqlServerReviewRepository>();
 builder.Services.AddScoped<ISavedPropertyRepository, SqlServerSavedPropertyRepository>();
 builder.Services.AddScoped<IBookingRepository, SqlServerBookingRepository>();
 builder.Services.AddScoped<IChatRepository, SqlServerChatRepository>();
