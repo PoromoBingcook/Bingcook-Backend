@@ -289,17 +289,16 @@ public sealed class BookingService : IBookingService
 
         if (candidate.BookingStatus is BookingStatuses.Confirmed or BookingStatuses.Paid)
         {
-            var localCheckIn = candidate.CheckIn.ToDateTime(
-                new TimeOnly(14, 0),
+            var localCheckInDayStart = candidate.CheckIn.ToDateTime(
+                TimeOnly.MinValue,
                 DateTimeKind.Unspecified);
-            var checkInInstant = new DateTimeOffset(
-                localCheckIn,
+            var cancellationDeadline = new DateTimeOffset(
+                localCheckInDayStart,
                 TimeSpan.FromHours(7));
-            var cancellationDeadline = checkInInstant.AddHours(-24);
             if (_timeProvider.GetUtcNow() >= cancellationDeadline)
             {
                 return BookingCancellationOutcome.Conflict(
-                    "Bookings must be cancelled at least 24 hours before the 14:00 check-in time.");
+                    "Bookings can only be cancelled before the check-in date.");
             }
         }
 

@@ -290,7 +290,7 @@ public sealed class BookingServiceTests
             repository,
             new FakePayOSPaymentGateway(),
             notificationRepository,
-            new FixedTimeProvider(new DateTimeOffset(2026, 7, 14, 0, 0, 0, TimeSpan.Zero)));
+            new FixedTimeProvider(new DateTimeOffset(2026, 7, 15, 16, 59, 59, TimeSpan.Zero)));
 
         var outcome = await service.CancelAsync(
             bookingId,
@@ -389,7 +389,7 @@ public sealed class BookingServiceTests
     }
 
     [Fact]
-    public async Task CancelAsync_ReturnsConflictAtOrAfterTwentyFourHourCutoff()
+    public async Task CancelAsync_ReturnsConflictWhenCheckInDayStartsInVietnam()
     {
         var bookingId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
         var userId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
@@ -407,7 +407,7 @@ public sealed class BookingServiceTests
             repository,
             new FakePayOSPaymentGateway(),
             timeProvider: new FixedTimeProvider(
-                new DateTimeOffset(2026, 7, 15, 7, 0, 0, TimeSpan.Zero)));
+                new DateTimeOffset(2026, 7, 15, 17, 0, 0, TimeSpan.Zero)));
 
         var outcome = await service.CancelAsync(
             bookingId,
@@ -415,14 +415,14 @@ public sealed class BookingServiceTests
             CancellationToken.None);
 
         Assert.Equal(BookingCancellationOutcomeStatus.Conflict, outcome.Status);
-        Assert.Contains("24 hours", outcome.Error);
+        Assert.Contains("before the check-in date", outcome.Error);
         Assert.Equal(0, repository.CompleteCancellationCalls);
     }
 
     [Fact]
-    public void BookingStatuses_DoNotAllowPaidToDowngrade()
+    public void BookingStatuses_AllowPaidBookingCancellationOnly()
     {
-        Assert.False(BookingStatuses.CanTransition(
+        Assert.True(BookingStatuses.CanTransition(
             BookingStatuses.Paid,
             BookingStatuses.Cancelled));
         Assert.False(BookingStatuses.CanTransition(

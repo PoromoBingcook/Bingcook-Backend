@@ -31,7 +31,7 @@ public static class BookingStatuses
             Pending => nextStatus is PendingPayment or Confirmed or Cancelled or Expired,
             PendingPayment => nextStatus is Paid or Cancelled or Expired,
             Confirmed => nextStatus is Cancelled,
-            Paid => false,
+            Paid => nextStatus is Cancelled,
             Cancelled => false,
             Expired => false,
             _ => false
