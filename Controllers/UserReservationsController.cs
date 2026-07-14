@@ -2,6 +2,8 @@ using System.Data;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using BingCook.Api.Data;
+using BingCook.Api.Models;
+using BingCook.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Data.SqlClient;
@@ -14,10 +16,14 @@ namespace BingCook.Api.Controllers;
 public sealed class UserReservationsController : ControllerBase
 {
     private readonly SqlConnectionFactory _connectionFactory;
+    private readonly IBookingService _bookingService;
 
-    public UserReservationsController(SqlConnectionFactory connectionFactory)
+    public UserReservationsController(
+        SqlConnectionFactory connectionFactory,
+        IBookingService bookingService)
     {
         _connectionFactory = connectionFactory;
+        _bookingService = bookingService;
     }
 
     [HttpGet]
@@ -29,6 +35,8 @@ public sealed class UserReservationsController : ControllerBase
         {
             return Unauthorized(new { message = "Invalid access token." });
         }
+
+        await _bookingService.ExpireStaleBookingsAsync(cancellationToken);
 
         const string sql = """
             SELECT
@@ -47,9 +55,12 @@ public sealed class UserReservationsController : ControllerBase
                 b.ChildGuest AS Children,
                 b.RoomQuantity,
                 b.TotalPrice,
+                b.ExpiresAt,
                 b.[Status] AS BookingStatus,
                 latestPayment.[Status] AS PaymentStatus,
-                latestPayment.Method AS PaymentMethod
+                latestPayment.Method AS PaymentMethod,
+                latestPayment.TransactionCode,
+                latestPayment.CheckoutUrl
             FROM dbo.Booking b
             INNER JOIN dbo.Property p ON p.Id = b.PropertyId
             INNER JOIN dbo.Room r ON r.Id = b.RoomId
@@ -66,7 +77,7 @@ public sealed class UserReservationsController : ControllerBase
                 ORDER BY Id
             ) roomImage
             OUTER APPLY (
-                SELECT TOP (1) [Status], Method
+                SELECT TOP (1) [Status], Method, TransactionCode, CheckoutUrl
                 FROM dbo.Payment
                 WHERE BookingId = b.Id
                 ORDER BY CreatedAt DESC
@@ -84,6 +95,12 @@ public sealed class UserReservationsController : ControllerBase
         await using var reader = await command.ExecuteReaderAsync(cancellationToken);
         while (await reader.ReadAsync(cancellationToken))
         {
+            var bookingStatus = reader.GetString(reader.GetOrdinal("BookingStatus"));
+            if (!BookingStatuses.IsVisibleReservation(bookingStatus))
+            {
+                continue;
+            }
+
             reservations.Add(new UserReservationResponse(
                 reader.GetGuid(reader.GetOrdinal("BookingId")),
                 reader.GetGuid(reader.GetOrdinal("PropertyId")),
@@ -100,9 +117,12 @@ public sealed class UserReservationsController : ControllerBase
                 reader.GetInt32(reader.GetOrdinal("Children")),
                 reader.GetInt32(reader.GetOrdinal("RoomQuantity")),
                 reader.GetDecimal(reader.GetOrdinal("TotalPrice")),
-                reader.GetString(reader.GetOrdinal("BookingStatus")),
+                bookingStatus,
                 ReadNullableString(reader, "PaymentStatus"),
-                ReadNullableString(reader, "PaymentMethod")));
+                ReadNullableString(reader, "PaymentMethod"),
+                ReadNullableString(reader, "TransactionCode"),
+                ReadNullableString(reader, "CheckoutUrl"),
+                ReadNullableDateTime(reader, "ExpiresAt")));
         }
 
         return Ok(reservations);
@@ -128,6 +148,14 @@ public sealed class UserReservationsController : ControllerBase
             ? null
             : Convert.ToDouble(reader.GetValue(ordinal));
     }
+
+    private static DateTime? ReadNullableDateTime(SqlDataReader reader, string name)
+    {
+        var ordinal = reader.GetOrdinal(name);
+        return reader.IsDBNull(ordinal)
+            ? null
+            : DateTime.SpecifyKind(reader.GetDateTime(ordinal), DateTimeKind.Utc);
+    }
 }
 
 public sealed record UserReservationResponse(
@@ -148,4 +176,7 @@ public sealed record UserReservationResponse(
     decimal TotalPrice,
     string BookingStatus,
     string? PaymentStatus,
-    string? PaymentMethod);
+    string? PaymentMethod,
+    string? TransactionCode,
+    string? CheckoutUrl,
+    DateTime? ExpiresAt);

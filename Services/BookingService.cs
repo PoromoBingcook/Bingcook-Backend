@@ -55,6 +55,17 @@ public sealed class BookingService : IBookingService
                 $"Unsupported add-on '{invalidAddOn}'.");
         }
 
+        var existingBookingId = await _bookingRepository.FindActivePendingPaymentAsync(
+            command.UserId,
+            command.RoomId,
+            command.CheckIn,
+            command.CheckOut,
+            cancellationToken);
+        if (existingBookingId is not null)
+        {
+            return BookingDraftOutcome.ExistingPayment(existingBookingId.Value);
+        }
+
         var quote = await _bookingRepository.GetRoomQuoteAsync(
             command.PropertyId,
             command.RoomId,
@@ -255,6 +266,8 @@ public sealed class BookingService : IBookingService
         Guid userId,
         CancellationToken cancellationToken)
     {
+        await ExpireStaleBookingsAsync(cancellationToken);
+
         var candidate = await _bookingRepository.GetCancellationCandidateAsync(
             bookingId,
             userId,
@@ -274,17 +287,31 @@ public sealed class BookingService : IBookingService
                 "This booking can no longer be cancelled.");
         }
 
-        var localCheckIn = candidate.CheckIn.ToDateTime(
-            new TimeOnly(14, 0),
-            DateTimeKind.Unspecified);
-        var checkInInstant = new DateTimeOffset(
-            localCheckIn,
-            TimeSpan.FromHours(7));
-        var cancellationDeadline = checkInInstant.AddHours(-24);
-        if (_timeProvider.GetUtcNow() >= cancellationDeadline)
+        if (candidate.BookingStatus is BookingStatuses.Confirmed or BookingStatuses.Paid)
         {
-            return BookingCancellationOutcome.Conflict(
-                "Bookings must be cancelled at least 24 hours before the 14:00 check-in time.");
+            var localCheckIn = candidate.CheckIn.ToDateTime(
+                new TimeOnly(14, 0),
+                DateTimeKind.Unspecified);
+            var checkInInstant = new DateTimeOffset(
+                localCheckIn,
+                TimeSpan.FromHours(7));
+            var cancellationDeadline = checkInInstant.AddHours(-24);
+            if (_timeProvider.GetUtcNow() >= cancellationDeadline)
+            {
+                return BookingCancellationOutcome.Conflict(
+                    "Bookings must be cancelled at least 24 hours before the 14:00 check-in time.");
+            }
+        }
+
+        if (candidate.BookingStatus == BookingStatuses.PendingPayment)
+        {
+            var payOSOutcome = await CancelPendingPayOSPaymentAsync(
+                candidate,
+                cancellationToken);
+            if (payOSOutcome is not null)
+            {
+                return payOSOutcome;
+            }
         }
 
         var result = await _bookingRepository.CompleteCancellationAsync(
@@ -306,6 +333,68 @@ public sealed class BookingService : IBookingService
             cancellationToken);
 
         return BookingCancellationOutcome.Success(result);
+    }
+
+    private async Task<BookingCancellationOutcome?> CancelPendingPayOSPaymentAsync(
+        BookingCancellationCandidate candidate,
+        CancellationToken cancellationToken)
+    {
+        if (candidate.PaymentStatus == PaymentStatuses.Success)
+        {
+            return BookingCancellationOutcome.Conflict(
+                "This payment has already been paid. Refresh your reservations before cancelling.");
+        }
+
+        if (!long.TryParse(candidate.TransactionCode, out var orderCode))
+        {
+            return null;
+        }
+
+        OnlinePaymentStatus payOSStatus;
+        try
+        {
+            payOSStatus = await _payOSPaymentGateway.CancelPaymentLinkAsync(
+                orderCode,
+                "Customer cancelled the BingCook reservation.",
+                cancellationToken);
+        }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            _logger.LogWarning(
+                error,
+                "Unable to cancel PayOS payment link for booking {BookingId}.",
+                candidate.BookingId);
+            return BookingCancellationOutcome.GatewayError(
+                "Unable to cancel the PayOS payment link. Please try again.");
+        }
+
+        switch (payOSStatus.Status.ToUpperInvariant())
+        {
+            case "CANCELLED":
+            case "CANCELED":
+                return null;
+            case "PAID":
+                await UpdatePayOSPaymentAsync(
+                    new PayOSPaymentUpdateCommand(
+                        orderCode.ToString(),
+                        PaymentStatuses.Success,
+                        BookingStatuses.Paid),
+                    cancellationToken);
+                return BookingCancellationOutcome.Conflict(
+                    "This payment has already been paid. Refresh your reservations before cancelling.");
+            case "EXPIRED":
+                await UpdatePayOSPaymentAsync(
+                    new PayOSPaymentUpdateCommand(
+                        orderCode.ToString(),
+                        PaymentStatuses.Expired,
+                        BookingStatuses.Expired),
+                    cancellationToken);
+                return BookingCancellationOutcome.Conflict(
+                    "This payment link has expired. Refresh your reservations to book again.");
+            default:
+                return BookingCancellationOutcome.GatewayError(
+                    "PayOS did not cancel the payment link. Please try again.");
+        }
     }
 
     private static string? Validate(BookingSelectionCommand command)
@@ -379,7 +468,7 @@ public sealed class BookingService : IBookingService
         return TimeSpan.FromMinutes(minutes);
     }
 
-    private Task<int> ExpireStaleBookingsAsync(CancellationToken cancellationToken)
+    public Task<int> ExpireStaleBookingsAsync(CancellationToken cancellationToken)
     {
         return _bookingRepository.ExpireStaleBookingsAsync(
             _timeProvider.GetUtcNow().UtcDateTime,
@@ -442,6 +531,9 @@ public sealed class BookingService : IBookingService
         BookingCheckoutQuote quote,
         CancellationToken cancellationToken)
     {
+        var expiresAt = EnsureUtc(
+            quote.ExpiresAt
+                ?? _timeProvider.GetUtcNow().UtcDateTime.Add(GetHoldDuration()));
         OnlinePaymentLink paymentLink;
         try
         {
@@ -450,7 +542,8 @@ public sealed class BookingService : IBookingService
                     quote.BookingId,
                     quote.PropertyName,
                     quote.RoomName,
-                    quote.TotalPrice),
+                    quote.TotalPrice,
+                    expiresAt),
                 cancellationToken);
         }
         catch (Exception error) when (error is not OperationCanceledException)
@@ -504,7 +597,7 @@ public sealed class BookingService : IBookingService
                 paymentLink.PaymentLinkId,
                 paymentLink.CheckoutUrl,
                 paymentLink.QrCode,
-                quote.ExpiresAt,
+                expiresAt,
                 "Open checkoutUrl to pay with PayOS."));
     }
 
@@ -543,6 +636,16 @@ public sealed class BookingService : IBookingService
                 PayOSMethod,
                 StringComparison.OrdinalIgnoreCase) => PayOSMethod,
             _ => null
+        };
+    }
+
+    private static DateTime EnsureUtc(DateTime value)
+    {
+        return value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
         };
     }
 

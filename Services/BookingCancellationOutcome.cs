@@ -6,7 +6,8 @@ public enum BookingCancellationOutcomeStatus
 {
     Success,
     NotFound,
-    Conflict
+    Conflict,
+    GatewayError
 }
 
 public sealed record BookingCancellationOutcome(
@@ -22,4 +23,7 @@ public sealed record BookingCancellationOutcome(
 
     public static BookingCancellationOutcome Conflict(string error) =>
         new(BookingCancellationOutcomeStatus.Conflict, null, error);
+
+    public static BookingCancellationOutcome GatewayError(string error) =>
+        new(BookingCancellationOutcomeStatus.GatewayError, null, error);
 }

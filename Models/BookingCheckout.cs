@@ -69,7 +69,8 @@ public sealed record CreateOnlinePaymentLinkCommand(
     Guid BookingId,
     string PropertyName,
     string RoomName,
-    decimal Amount);
+    decimal Amount,
+    DateTime ExpiresAt);
 
 public sealed record OnlinePaymentLink(
     long OrderCode,

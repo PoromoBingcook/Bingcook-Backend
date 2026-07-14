@@ -42,6 +42,13 @@ public interface IBookingRepository
         PayOSPaymentUpdateCommand command,
         CancellationToken cancellationToken);
 
+    Task<Guid?> FindActivePendingPaymentAsync(
+        Guid userId,
+        Guid roomId,
+        DateOnly checkIn,
+        DateOnly checkOut,
+        CancellationToken cancellationToken);
+
     Task<BookingCancellationCandidate?> GetCancellationCandidateAsync(
         Guid bookingId,
         Guid userId,

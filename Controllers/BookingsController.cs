@@ -51,6 +51,12 @@ public sealed class BookingsController : ControllerBase
             BookingDraftOutcomeStatus.ValidationError => BadRequest(new { message = result.Error }),
             BookingDraftOutcomeStatus.NotFound => NotFound(new { message = result.Error }),
             BookingDraftOutcomeStatus.Unavailable => Conflict(new { message = result.Error }),
+            BookingDraftOutcomeStatus.ExistingPayment => Conflict(new
+            {
+                message = result.Error,
+                code = "PendingPaymentExists",
+                bookingId = result.ExistingBookingId
+            }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
@@ -168,6 +174,9 @@ public sealed class BookingsController : ControllerBase
             BookingCancellationOutcomeStatus.NotFound => NotFound(
                 new { message = outcome.Error }),
             BookingCancellationOutcomeStatus.Conflict => Conflict(
+                new { message = outcome.Error }),
+            BookingCancellationOutcomeStatus.GatewayError => StatusCode(
+                StatusCodes.Status502BadGateway,
                 new { message = outcome.Error }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };

@@ -526,6 +526,35 @@ public sealed class PostgresBookingRepository : IBookingRepository
             true);
     }
 
+    public async Task<Guid?> FindActivePendingPaymentAsync(
+        Guid userId,
+        Guid roomId,
+        DateOnly checkIn,
+        DateOnly checkOut,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT id
+            FROM booking
+            WHERE userid = @userId
+              AND roomid = @roomId
+              AND checkin = @checkIn
+              AND checkout = @checkOut
+              AND status::text = 'PendingPayment'
+              AND expiresat > CURRENT_TIMESTAMP
+            ORDER BY expiresat DESC
+            LIMIT 1;
+            """;
+
+        await using var command = _dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("userId", userId);
+        command.Parameters.AddWithValue("roomId", roomId);
+        AddDate(command, "checkIn", checkIn);
+        AddDate(command, "checkOut", checkOut);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is Guid bookingId ? bookingId : null;
+    }
+
     public async Task<BookingCancellationCandidate?> GetCancellationCandidateAsync(
         Guid bookingId,
         Guid userId,

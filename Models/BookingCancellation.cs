@@ -6,7 +6,9 @@ public sealed record BookingCancellationCandidate(
     string PropertyName,
     DateOnly CheckIn,
     string BookingStatus,
-    string? PaymentStatus);
+    string? PaymentStatus,
+    string? TransactionCode = null,
+    DateTime? ExpiresAt = null);
 
 public sealed record CompleteBookingCancellationCommand(
     Guid BookingId,

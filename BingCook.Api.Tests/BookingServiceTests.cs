@@ -10,6 +10,35 @@ namespace BingCook.Api.Tests;
 public sealed class BookingServiceTests
 {
     [Fact]
+    public async Task CreateDraftAsync_ReturnsExistingPendingPaymentForSameStay()
+    {
+        var existingBookingId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee");
+        var repository = new FakeBookingRepository
+        {
+            ExistingPendingPaymentId = existingBookingId
+        };
+        var service = CreateService(repository, new FakePayOSPaymentGateway());
+
+        var result = await service.CreateDraftAsync(
+            new BookingSelectionCommand(
+                Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+                Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+                new DateOnly(2026, 7, 16),
+                new DateOnly(2026, 7, 17),
+                2,
+                0,
+                1,
+                Array.Empty<string>(),
+                null),
+            CancellationToken.None);
+
+        Assert.Equal(BookingDraftOutcomeStatus.ExistingPayment, result.Status);
+        Assert.Equal(existingBookingId, result.ExistingBookingId);
+        Assert.Equal(0, repository.CreateDraftCalls);
+    }
+
+    [Fact]
     public async Task CheckoutAsync_ReturnsValidationErrorWhenDraftExpired()
     {
         var repository = new FakeBookingRepository
@@ -130,6 +159,51 @@ public sealed class BookingServiceTests
     }
 
     [Fact]
+    public async Task CheckoutAsync_PassesBookingExpiryToPayOS()
+    {
+        var expiresAt = DateTime.UtcNow.AddMinutes(10);
+        var repository = new FakeBookingRepository
+        {
+            CheckoutQuote = CreateCheckoutQuote(
+                BookingStatuses.Pending,
+                expiresAt)
+        };
+        var gateway = new FakePayOSPaymentGateway();
+        var service = CreateService(repository, gateway);
+
+        var result = await service.CheckoutAsync(
+            CreatePayOSCheckoutCommand(),
+            CancellationToken.None);
+
+        Assert.Equal(BookingCheckoutOutcomeStatus.Success, result.Status);
+        Assert.Equal(expiresAt, gateway.LastCreateCommand?.ExpiresAt);
+    }
+
+    [Fact]
+    public async Task CheckoutAsync_NormalizesDatabaseExpiryToUtcBeforePayOS()
+    {
+        var expiresAt = DateTime.SpecifyKind(
+            DateTime.UtcNow.AddMinutes(10),
+            DateTimeKind.Unspecified);
+        var repository = new FakeBookingRepository
+        {
+            CheckoutQuote = CreateCheckoutQuote(
+                BookingStatuses.Pending,
+                expiresAt)
+        };
+        var gateway = new FakePayOSPaymentGateway();
+        var service = CreateService(repository, gateway);
+
+        var result = await service.CheckoutAsync(
+            CreatePayOSCheckoutCommand(),
+            CancellationToken.None);
+
+        Assert.Equal(BookingCheckoutOutcomeStatus.Success, result.Status);
+        Assert.Equal(DateTimeKind.Utc, gateway.LastCreateCommand?.ExpiresAt.Kind);
+        Assert.Equal(expiresAt.Ticks, gateway.LastCreateCommand?.ExpiresAt.Ticks);
+    }
+
+    [Fact]
     public async Task UpdatePayOSPaymentAsync_CreatesOneSuccessfulBookingNotification()
     {
         var userId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
@@ -243,18 +317,21 @@ public sealed class BookingServiceTests
                 "BingCook Central Hotel",
                 new DateOnly(2026, 7, 16),
                 BookingStatuses.PendingPayment,
-                PaymentStatuses.Pending),
+                PaymentStatuses.Pending,
+                "123456789",
+                new DateTime(2026, 7, 16, 8, 0, 0, DateTimeKind.Utc)),
             CancellationResult = new BookingCancellationResult(
                 bookingId,
                 BookingStatuses.Cancelled,
                 PaymentStatuses.Cancelled,
                 "Booking cancelled.")
         };
+        var gateway = new FakePayOSPaymentGateway();
         var service = CreateService(
             repository,
-            new FakePayOSPaymentGateway(),
+            gateway,
             timeProvider: new FixedTimeProvider(
-                new DateTimeOffset(2026, 7, 14, 0, 0, 0, TimeSpan.Zero)));
+                new DateTimeOffset(2026, 7, 16, 6, 30, 0, TimeSpan.Zero)));
 
         var outcome = await service.CancelAsync(
             bookingId,
@@ -263,6 +340,52 @@ public sealed class BookingServiceTests
 
         Assert.Equal(BookingCancellationOutcomeStatus.Success, outcome.Status);
         Assert.Equal(PaymentStatuses.Cancelled, outcome.Result?.PaymentStatus);
+        Assert.Equal(1, gateway.CancelPaymentLinkCalls);
+        Assert.Equal(123456789, gateway.LastCancelledOrderCode);
+    }
+
+    [Fact]
+    public async Task CancelAsync_RefusesPendingCancellationWhenPayOSReportsPaid()
+    {
+        var bookingId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var userId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var repository = new FakeBookingRepository
+        {
+            CancellationCandidate = new BookingCancellationCandidate(
+                bookingId,
+                userId,
+                "BingCook Central Hotel",
+                new DateOnly(2026, 7, 16),
+                BookingStatuses.PendingPayment,
+                PaymentStatuses.Pending,
+                "123456789",
+                new DateTime(2026, 7, 16, 8, 0, 0, DateTimeKind.Utc)),
+            PayOSUpdateResult = new PayOSPaymentUpdateResult(
+                userId,
+                "BingCook Central Hotel",
+                PaymentStatuses.Success,
+                BookingStatuses.Paid,
+                true)
+        };
+        var gateway = new FakePayOSPaymentGateway
+        {
+            CancellationStatus = "PAID"
+        };
+        var service = CreateService(
+            repository,
+            gateway,
+            timeProvider: new FixedTimeProvider(
+                new DateTimeOffset(2026, 7, 14, 0, 0, 0, TimeSpan.Zero)));
+
+        var outcome = await service.CancelAsync(
+            bookingId,
+            userId,
+            CancellationToken.None);
+
+        Assert.Equal(BookingCancellationOutcomeStatus.Conflict, outcome.Status);
+        Assert.Contains("already been paid", outcome.Error);
+        Assert.Equal(1, repository.UpdatePayOSPaymentCalls);
+        Assert.Equal(0, repository.CompleteCancellationCalls);
     }
 
     [Fact]
@@ -368,7 +491,13 @@ public sealed class BookingServiceTests
 
         public BookingCancellationResult? CancellationResult { get; init; }
 
+        public Guid? ExistingPendingPaymentId { get; init; }
+
+        public int CreateDraftCalls { get; private set; }
+
         public int CompleteCancellationCalls { get; private set; }
+
+        public int UpdatePayOSPaymentCalls { get; private set; }
 
         public Task<BookingRoomQuote?> GetRoomQuoteAsync(
             Guid propertyId,
@@ -384,7 +513,18 @@ public sealed class BookingServiceTests
             CreateBookingDraftCommand command,
             CancellationToken cancellationToken)
         {
+            CreateDraftCalls++;
             return Task.FromResult(Guid.NewGuid());
+        }
+
+        public Task<Guid?> FindActivePendingPaymentAsync(
+            Guid userId,
+            Guid roomId,
+            DateOnly checkIn,
+            DateOnly checkOut,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(ExistingPendingPaymentId);
         }
 
         public Task<BookingCheckoutQuote?> GetCheckoutQuoteAsync(
@@ -429,6 +569,7 @@ public sealed class BookingServiceTests
             PayOSPaymentUpdateCommand command,
             CancellationToken cancellationToken)
         {
+            UpdatePayOSPaymentCalls++;
             return Task.FromResult(PayOSUpdateResult);
         }
 
@@ -452,12 +593,17 @@ public sealed class BookingServiceTests
     private sealed class FakePayOSPaymentGateway : IPayOSPaymentGateway
     {
         public int CreatePaymentLinkCalls { get; private set; }
+        public CreateOnlinePaymentLinkCommand? LastCreateCommand { get; private set; }
+        public int CancelPaymentLinkCalls { get; private set; }
+        public long? LastCancelledOrderCode { get; private set; }
+        public string CancellationStatus { get; init; } = "CANCELLED";
 
         public Task<OnlinePaymentLink> CreatePaymentLinkAsync(
             CreateOnlinePaymentLinkCommand command,
             CancellationToken cancellationToken)
         {
             CreatePaymentLinkCalls++;
+            LastCreateCommand = command;
             return Task.FromResult(
                 new OnlinePaymentLink(
                     123456789,
@@ -480,8 +626,10 @@ public sealed class BookingServiceTests
             string reason,
             CancellationToken cancellationToken)
         {
+            CancelPaymentLinkCalls++;
+            LastCancelledOrderCode = orderCode;
             return Task.FromResult(
-                new OnlinePaymentStatus(orderCode, "paylink", "CANCELLED", 950000m));
+                new OnlinePaymentStatus(orderCode, "paylink", CancellationStatus, 950000m));
         }
 
         public bool VerifyWebhookSignature(

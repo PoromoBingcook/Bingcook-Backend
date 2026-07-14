@@ -571,6 +571,37 @@ public sealed class SqlServerBookingRepository : IBookingRepository
             true);
     }
 
+    public async Task<Guid?> FindActivePendingPaymentAsync(
+        Guid userId,
+        Guid roomId,
+        DateOnly checkIn,
+        DateOnly checkOut,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1) Id
+            FROM dbo.Booking
+            WHERE UserId = @userId
+              AND RoomId = @roomId
+              AND CheckIn = @checkIn
+              AND CheckOut = @checkOut
+              AND [Status] = N'PendingPayment'
+              AND ExpiresAt > SYSUTCDATETIME()
+            ORDER BY ExpiresAt DESC;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add("@userId", SqlDbType.UniqueIdentifier).Value = userId;
+        command.Parameters.Add("@roomId", SqlDbType.UniqueIdentifier).Value = roomId;
+        AddDate(command, "@checkIn", checkIn);
+        AddDate(command, "@checkOut", checkOut);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is Guid bookingId ? bookingId : null;
+    }
+
     public async Task<BookingCancellationCandidate?> GetCancellationCandidateAsync(
         Guid bookingId,
         Guid userId,
@@ -582,12 +613,14 @@ public sealed class SqlServerBookingRepository : IBookingRepository
                 b.UserId AS userid,
                 property.[Name] AS propertyname,
                 b.CheckIn AS checkin,
+                b.ExpiresAt AS expiresat,
                 b.[Status] AS bookingstatus,
-                latestPayment.[Status] AS paymentstatus
+                latestPayment.[Status] AS paymentstatus,
+                latestPayment.TransactionCode AS transactioncode
             FROM dbo.Booking b
             INNER JOIN dbo.Property property ON property.Id = b.PropertyId
             OUTER APPLY (
-                SELECT TOP (1) payment.[Status]
+                SELECT TOP (1) payment.[Status], payment.TransactionCode
                 FROM dbo.Payment payment
                 WHERE payment.BookingId = b.Id
                 ORDER BY payment.CreatedAt DESC
@@ -614,7 +647,9 @@ public sealed class SqlServerBookingRepository : IBookingRepository
             reader.GetString(reader.GetOrdinal("propertyname")),
             DateOnly.FromDateTime(reader.GetDateTime(reader.GetOrdinal("checkin"))),
             reader.GetString(reader.GetOrdinal("bookingstatus")),
-            ReadNullableString(reader, "paymentstatus"));
+            ReadNullableString(reader, "paymentstatus"),
+            ReadNullableString(reader, "transactioncode"),
+            ReadNullableDateTime(reader, "expiresat"));
     }
 
     public async Task<BookingCancellationResult?> CompleteCancellationAsync(
@@ -757,7 +792,9 @@ public sealed class SqlServerBookingRepository : IBookingRepository
     private static DateTime? ReadNullableDateTime(SqlDataReader reader, string name)
     {
         var ordinal = reader.GetOrdinal(name);
-        return reader.IsDBNull(ordinal) ? null : reader.GetDateTime(ordinal);
+        return reader.IsDBNull(ordinal)
+            ? null
+            : DateTime.SpecifyKind(reader.GetDateTime(ordinal), DateTimeKind.Utc);
     }
 
     private static decimal? ReadNullableDecimal(SqlDataReader reader, string name)
