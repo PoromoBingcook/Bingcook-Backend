@@ -2,6 +2,8 @@ using BingCook.Api.Data;
 using BingCook.Api.Dtos.Products;
 using BingCook.Api.Models;
 using Microsoft.AspNetCore.Mvc;
+using System.Globalization;
+using System.Text;
 
 namespace BingCook.Api.Controllers;
 
@@ -47,8 +49,8 @@ public sealed class ProductsController : ControllerBase
     private static ProductSearchCriteria ToCriteria(ProductSearchRequest request)
     {
         return new ProductSearchCriteria(
-            Normalize(request.Keyword),
-            Normalize(request.Location),
+            NormalizeLocationAlias(request.Keyword),
+            NormalizeLocationAlias(request.Location),
             request.CheckIn,
             request.CheckOut,
             request.Guests is > 0 ? request.Guests : null,
@@ -63,6 +65,55 @@ public sealed class ProductsController : ControllerBase
     {
         var normalized = value?.Trim();
         return string.IsNullOrEmpty(normalized) ? null : normalized;
+    }
+
+    private static string? NormalizeLocationAlias(string? value)
+    {
+        var normalized = Normalize(value);
+        if (normalized is null)
+        {
+            return null;
+        }
+
+        return FoldSearchText(normalized) switch
+        {
+            "ha noi" or "hanoi" => "Ha Noi",
+            "hai phong" => "Hai Phong",
+            "hue" => "Hue",
+            "da nang" or "danang" => "Da Nang",
+            "thanh pho ho chi minh"
+                or "ho chi minh"
+                or "ho chi minh city"
+                or "hcm"
+                or "tp hcm"
+                or "tp. hcm"
+                or "sai gon"
+                or "saigon" => "Ho Chi Minh",
+            "can tho" => "Can Tho",
+            "dong nai" => "Dong Nai",
+            _ => normalized
+        };
+    }
+
+    private static string FoldSearchText(string value)
+    {
+        var text = value
+            .Trim()
+            .ToLowerInvariant()
+            .Replace('đ', 'd')
+            .Replace('Đ', 'd')
+            .Normalize(NormalizationForm.FormD);
+        var builder = new StringBuilder(text.Length);
+        foreach (var character in text)
+        {
+            if (CharUnicodeInfo.GetUnicodeCategory(character)
+                != UnicodeCategory.NonSpacingMark)
+            {
+                builder.Append(character);
+            }
+        }
+
+        return builder.ToString().Normalize(NormalizationForm.FormC);
     }
 
     private static IReadOnlySet<string> ParseAmenities(string? amenities)
@@ -87,6 +138,8 @@ public sealed class ProductsController : ControllerBase
             $"{product.City}, {product.Address}",
             product.City,
             product.Address,
+            product.Latitude,
+            product.Longitude,
             product.ImageUrl,
             Math.Round(product.Rating, 1),
             product.ReviewCount,

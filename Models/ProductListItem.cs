@@ -19,4 +19,6 @@ public sealed record ProductListItem(
     bool HasAC,
     bool HasBreakfast,
     bool IsPetAllowed,
-    bool IsSelfCheckIn);
+    bool IsSelfCheckIn,
+    decimal? Latitude = null,
+    decimal? Longitude = null);
