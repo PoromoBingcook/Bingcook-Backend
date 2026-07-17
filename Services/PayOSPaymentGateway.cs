@@ -49,6 +49,8 @@ public sealed class PayOSPaymentGateway : IPayOSPaymentGateway
             description,
             _options.ReturnUrl,
             _options.CancelUrl,
+            new DateTimeOffset(command.ExpiresAt.ToUniversalTime())
+                .ToUnixTimeSeconds(),
             signature);
 
         using var request = new HttpRequestMessage(
@@ -247,6 +249,7 @@ public sealed class PayOSPaymentGateway : IPayOSPaymentGateway
         [property: JsonPropertyName("description")] string Description,
         [property: JsonPropertyName("returnUrl")] string ReturnUrl,
         [property: JsonPropertyName("cancelUrl")] string CancelUrl,
+        [property: JsonPropertyName("expiredAt")] long ExpiredAt,
         [property: JsonPropertyName("signature")] string Signature);
 
     private sealed record PayOSCancelPaymentLinkRequest(

@@ -7,13 +7,15 @@ public enum BookingDraftOutcomeStatus
     Success,
     ValidationError,
     NotFound,
-    Unavailable
+    Unavailable,
+    ExistingPayment
 }
 
 public sealed record BookingDraftOutcome(
     BookingDraftOutcomeStatus Status,
     BookingDraft? Draft,
-    string? Error)
+    string? Error,
+    Guid? ExistingBookingId = null)
 {
     public static BookingDraftOutcome Success(BookingDraft draft)
     {
@@ -45,5 +47,14 @@ public sealed record BookingDraftOutcome(
             BookingDraftOutcomeStatus.Unavailable,
             null,
             error);
+    }
+
+    public static BookingDraftOutcome ExistingPayment(Guid bookingId)
+    {
+        return new BookingDraftOutcome(
+            BookingDraftOutcomeStatus.ExistingPayment,
+            null,
+            "You already have a pending payment for this room and stay.",
+            bookingId);
     }
 }

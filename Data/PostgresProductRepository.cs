@@ -9,7 +9,7 @@ public sealed class PostgresProductRepository : IProductRepository
 {
     private const string CheckInPolicy = "Check-in from 14:00. Please bring a valid ID.";
     private const string CheckOutPolicy = "Check-out before 12:00.";
-    private const string CancellationPolicy = "Free cancellation up to 24 hours before check-in.";
+    private const string CancellationPolicy = "Free cancellation before the check-in date.";
 
     private readonly NpgsqlDataSource _dataSource;
 

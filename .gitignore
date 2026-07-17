@@ -44,3 +44,7 @@ secrets.json
 *.nupkg
 packages/
 .nuget/
+
+docs/superpowers/plans/
+docs/superpowers/specs/
+backend_api_configuration_guide.md

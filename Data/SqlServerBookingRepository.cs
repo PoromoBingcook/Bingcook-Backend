@@ -468,7 +468,7 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         return await command.ExecuteNonQueryAsync(cancellationToken);
     }
 
-    public async Task<bool> UpdatePayOSPaymentAsync(
+    public async Task<PayOSPaymentUpdateResult?> UpdatePayOSPaymentAsync(
         PayOSPaymentUpdateCommand command,
         CancellationToken cancellationToken)
     {
@@ -476,9 +476,12 @@ public sealed class SqlServerBookingRepository : IBookingRepository
             SELECT TOP (1)
                 p.BookingId,
                 p.[Status] AS paymentstatus,
-                b.[Status] AS bookingstatus
-            FROM dbo.Payment p
+                b.[Status] AS bookingstatus,
+                b.UserId AS userid,
+                property.[Name] AS propertyname
+            FROM dbo.Payment p WITH (UPDLOCK, ROWLOCK)
             INNER JOIN dbo.Booking b ON b.Id = p.BookingId
+            INNER JOIN dbo.Property property ON property.Id = b.PropertyId
             WHERE p.TransactionCode = @transactionCode
               AND p.Provider = N'PayOS';
             """;
@@ -514,19 +517,29 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         if (!await reader.ReadAsync(cancellationToken))
         {
             await transaction.RollbackAsync(cancellationToken);
-            return false;
+            return null;
         }
 
         var bookingId = reader.GetGuid(reader.GetOrdinal("BookingId"));
         var currentPaymentStatus = reader.GetString(reader.GetOrdinal("paymentstatus"));
         var currentBookingStatus = reader.GetString(reader.GetOrdinal("bookingstatus"));
+        var userId = reader.GetGuid(reader.GetOrdinal("userid"));
+        var propertyName = reader.GetString(reader.GetOrdinal("propertyname"));
         await reader.CloseAsync();
 
-        if (!PaymentStatuses.CanTransition(currentPaymentStatus, command.PaymentStatus)
+        var statusUnchanged = currentPaymentStatus == command.PaymentStatus
+            && currentBookingStatus == command.BookingStatus;
+        if (statusUnchanged
+            || !PaymentStatuses.CanTransition(currentPaymentStatus, command.PaymentStatus)
             || !BookingStatuses.CanTransition(currentBookingStatus, command.BookingStatus))
         {
             await transaction.CommitAsync(cancellationToken);
-            return true;
+            return new PayOSPaymentUpdateResult(
+                userId,
+                propertyName,
+                currentPaymentStatus,
+                currentBookingStatus,
+                false);
         }
 
         await using var updatePayment = connection.CreateCommand();
@@ -546,11 +559,188 @@ public sealed class SqlServerBookingRepository : IBookingRepository
         if (updatedRows == 0)
         {
             await transaction.RollbackAsync(cancellationToken);
-            return false;
+            return null;
         }
 
         await transaction.CommitAsync(cancellationToken);
-        return true;
+        return new PayOSPaymentUpdateResult(
+            userId,
+            propertyName,
+            command.PaymentStatus,
+            command.BookingStatus,
+            true);
+    }
+
+    public async Task<Guid?> FindActivePendingPaymentAsync(
+        Guid userId,
+        Guid roomId,
+        DateOnly checkIn,
+        DateOnly checkOut,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1) Id
+            FROM dbo.Booking
+            WHERE UserId = @userId
+              AND RoomId = @roomId
+              AND CheckIn = @checkIn
+              AND CheckOut = @checkOut
+              AND [Status] = N'PendingPayment'
+              AND ExpiresAt > SYSUTCDATETIME()
+            ORDER BY ExpiresAt DESC;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add("@userId", SqlDbType.UniqueIdentifier).Value = userId;
+        command.Parameters.Add("@roomId", SqlDbType.UniqueIdentifier).Value = roomId;
+        AddDate(command, "@checkIn", checkIn);
+        AddDate(command, "@checkOut", checkOut);
+        var result = await command.ExecuteScalarAsync(cancellationToken);
+        return result is Guid bookingId ? bookingId : null;
+    }
+
+    public async Task<BookingCancellationCandidate?> GetCancellationCandidateAsync(
+        Guid bookingId,
+        Guid userId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                b.Id AS bookingid,
+                b.UserId AS userid,
+                property.[Name] AS propertyname,
+                b.CheckIn AS checkin,
+                b.ExpiresAt AS expiresat,
+                b.[Status] AS bookingstatus,
+                latestPayment.[Status] AS paymentstatus,
+                latestPayment.TransactionCode AS transactioncode
+            FROM dbo.Booking b
+            INNER JOIN dbo.Property property ON property.Id = b.PropertyId
+            OUTER APPLY (
+                SELECT TOP (1) payment.[Status], payment.TransactionCode
+                FROM dbo.Payment payment
+                WHERE payment.BookingId = b.Id
+                ORDER BY payment.CreatedAt DESC
+            ) latestPayment
+            WHERE b.Id = @bookingId
+              AND b.UserId = @userId;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add("@bookingId", SqlDbType.UniqueIdentifier).Value = bookingId;
+        command.Parameters.Add("@userId", SqlDbType.UniqueIdentifier).Value = userId;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return new BookingCancellationCandidate(
+            reader.GetGuid(reader.GetOrdinal("bookingid")),
+            reader.GetGuid(reader.GetOrdinal("userid")),
+            reader.GetString(reader.GetOrdinal("propertyname")),
+            DateOnly.FromDateTime(reader.GetDateTime(reader.GetOrdinal("checkin"))),
+            reader.GetString(reader.GetOrdinal("bookingstatus")),
+            ReadNullableString(reader, "paymentstatus"),
+            ReadNullableString(reader, "transactioncode"),
+            ReadNullableDateTime(reader, "expiresat"));
+    }
+
+    public async Task<BookingCancellationResult?> CompleteCancellationAsync(
+        CompleteBookingCancellationCommand command,
+        CancellationToken cancellationToken)
+    {
+        const string lockPaymentsSql = """
+            SELECT Id
+            FROM dbo.Payment WITH (UPDLOCK, ROWLOCK)
+            WHERE BookingId = @bookingId
+            ORDER BY CreatedAt, Id;
+            """;
+
+        const string updateBookingSql = """
+            UPDATE dbo.Booking
+            SET [Status] = N'Cancelled'
+            WHERE Id = @bookingId
+              AND UserId = @userId
+              AND [Status] = @expectedBookingStatus;
+            """;
+
+        const string updatePaymentSql = """
+            UPDATE dbo.Payment
+            SET
+                [Status] = N'Cancelled',
+                UpdatedAt = SYSUTCDATETIME()
+            WHERE Id = (
+                SELECT TOP (1) Id
+                FROM dbo.Payment
+                WHERE BookingId = @bookingId
+                  AND [Status] = N'Pending'
+                ORDER BY CreatedAt DESC
+            );
+            """;
+
+        const string findPaymentSql = """
+            SELECT TOP (1) [Status] AS paymentstatus
+            FROM dbo.Payment
+            WHERE BookingId = @bookingId
+            ORDER BY CreatedAt DESC;
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var transaction = await connection.BeginTransactionAsync(cancellationToken);
+
+        await using var lockPayments = connection.CreateCommand();
+        lockPayments.Transaction = (SqlTransaction)transaction;
+        lockPayments.CommandText = lockPaymentsSql;
+        lockPayments.Parameters.Add("@bookingId", SqlDbType.UniqueIdentifier).Value = command.BookingId;
+        await using (var lockedPayments = await lockPayments.ExecuteReaderAsync(cancellationToken))
+        {
+            while (await lockedPayments.ReadAsync(cancellationToken))
+            {
+                _ = lockedPayments.GetGuid(0);
+            }
+        }
+
+        await using var updateBooking = connection.CreateCommand();
+        updateBooking.Transaction = (SqlTransaction)transaction;
+        updateBooking.CommandText = updateBookingSql;
+        updateBooking.Parameters.Add("@bookingId", SqlDbType.UniqueIdentifier).Value = command.BookingId;
+        updateBooking.Parameters.Add("@userId", SqlDbType.UniqueIdentifier).Value = command.UserId;
+        AddText(updateBooking, "@expectedBookingStatus", command.ExpectedBookingStatus, 20);
+        if (await updateBooking.ExecuteNonQueryAsync(cancellationToken) == 0)
+        {
+            await transaction.RollbackAsync(cancellationToken);
+            return null;
+        }
+
+        await using var updatePayment = connection.CreateCommand();
+        updatePayment.Transaction = (SqlTransaction)transaction;
+        updatePayment.CommandText = updatePaymentSql;
+        updatePayment.Parameters.Add("@bookingId", SqlDbType.UniqueIdentifier).Value = command.BookingId;
+        await updatePayment.ExecuteNonQueryAsync(cancellationToken);
+
+        await using var findPayment = connection.CreateCommand();
+        findPayment.Transaction = (SqlTransaction)transaction;
+        findPayment.CommandText = findPaymentSql;
+        findPayment.Parameters.Add("@bookingId", SqlDbType.UniqueIdentifier).Value = command.BookingId;
+        var paymentStatus = (string?)await findPayment.ExecuteScalarAsync(cancellationToken);
+
+        await transaction.CommitAsync(cancellationToken);
+        var message = paymentStatus == PaymentStatuses.Success
+            ? "Booking cancelled. Your successful payment is unchanged; contact support about refunds."
+            : "Booking cancelled.";
+        return new BookingCancellationResult(
+            command.BookingId,
+            BookingStatuses.Cancelled,
+            paymentStatus,
+            message);
     }
 
     private static void AddCheckoutParameters(
@@ -602,7 +792,9 @@ public sealed class SqlServerBookingRepository : IBookingRepository
     private static DateTime? ReadNullableDateTime(SqlDataReader reader, string name)
     {
         var ordinal = reader.GetOrdinal(name);
-        return reader.IsDBNull(ordinal) ? null : reader.GetDateTime(ordinal);
+        return reader.IsDBNull(ordinal)
+            ? null
+            : DateTime.SpecifyKind(reader.GetDateTime(ordinal), DateTimeKind.Utc);
     }
 
     private static decimal? ReadNullableDecimal(SqlDataReader reader, string name)

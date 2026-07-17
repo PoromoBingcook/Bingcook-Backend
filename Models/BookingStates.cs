@@ -14,6 +14,11 @@ public static class BookingStatuses
         return status is Pending or PendingPayment or Confirmed or Paid;
     }
 
+    public static bool IsVisibleReservation(string status)
+    {
+        return status != Pending;
+    }
+
     public static bool CanTransition(string currentStatus, string nextStatus)
     {
         if (currentStatus == nextStatus)
@@ -26,7 +31,7 @@ public static class BookingStatuses
             Pending => nextStatus is PendingPayment or Confirmed or Cancelled or Expired,
             PendingPayment => nextStatus is Paid or Cancelled or Expired,
             Confirmed => nextStatus is Cancelled,
-            Paid => false,
+            Paid => nextStatus is Cancelled,
             Cancelled => false,
             Expired => false,
             _ => false

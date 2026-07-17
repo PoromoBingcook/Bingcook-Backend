@@ -34,6 +34,7 @@ builder.Services.AddSingleton(_ =>
 
 builder.Services.AddScoped<IUserRepository, SqlServerUserRepository>();
 builder.Services.AddScoped<IProductRepository, SqlServerProductRepository>();
+builder.Services.AddScoped<IReviewRepository, SqlServerReviewRepository>();
 builder.Services.AddScoped<ISavedPropertyRepository, SqlServerSavedPropertyRepository>();
 builder.Services.AddScoped<IBookingRepository, SqlServerBookingRepository>();
 builder.Services.AddScoped<IChatRepository, SqlServerChatRepository>();
@@ -42,6 +43,7 @@ builder.Services.AddScoped<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IWelcomeEmailSender, SmtpWelcomeEmailSender>();
 builder.Services.AddScoped<IAuthService, AuthService>();
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IBookingService, BookingService>();
 builder.Services.AddScoped<IChatService, ChatService>();
 builder.Services.AddHttpClient<IPayOSPaymentGateway, PayOSPaymentGateway>();

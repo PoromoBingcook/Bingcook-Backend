@@ -51,6 +51,12 @@ public sealed class BookingsController : ControllerBase
             BookingDraftOutcomeStatus.ValidationError => BadRequest(new { message = result.Error }),
             BookingDraftOutcomeStatus.NotFound => NotFound(new { message = result.Error }),
             BookingDraftOutcomeStatus.Unavailable => Conflict(new { message = result.Error }),
+            BookingDraftOutcomeStatus.ExistingPayment => Conflict(new
+            {
+                message = result.Error,
+                code = "PendingPaymentExists",
+                bookingId = result.ExistingBookingId
+            }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
@@ -145,6 +151,37 @@ public sealed class BookingsController : ControllerBase
         };
     }
 
+    [HttpPost("{bookingId:guid}/cancel")]
+    public async Task<ActionResult<BookingCancellationResponse>> Cancel(
+        Guid bookingId,
+        CancellationToken cancellationToken)
+    {
+        var userId = GetUserId();
+        if (userId is null)
+        {
+            return Unauthorized(new { message = "Invalid access token." });
+        }
+
+        var outcome = await _bookingService.CancelAsync(
+            bookingId,
+            userId.Value,
+            cancellationToken);
+
+        return outcome.Status switch
+        {
+            BookingCancellationOutcomeStatus.Success => Ok(
+                ToResponse(outcome.Result!)),
+            BookingCancellationOutcomeStatus.NotFound => NotFound(
+                new { message = outcome.Error }),
+            BookingCancellationOutcomeStatus.Conflict => Conflict(
+                new { message = outcome.Error }),
+            BookingCancellationOutcomeStatus.GatewayError => StatusCode(
+                StatusCodes.Status502BadGateway,
+                new { message = outcome.Error }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
     private Guid? GetUserId()
     {
         var id = User.FindFirstValue(JwtRegisteredClaimNames.Sub)
@@ -220,5 +257,15 @@ public sealed class BookingsController : ControllerBase
             status.ExpiresAt,
             status.PaidAt,
             status.UpdatedAt);
+    }
+
+    private static BookingCancellationResponse ToResponse(
+        BookingCancellationResult result)
+    {
+        return new BookingCancellationResponse(
+            result.BookingId,
+            result.BookingStatus,
+            result.PaymentStatus,
+            result.Message);
     }
 }

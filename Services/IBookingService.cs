@@ -17,7 +17,14 @@ public interface IBookingService
         Guid userId,
         CancellationToken cancellationToken);
 
+    Task<int> ExpireStaleBookingsAsync(CancellationToken cancellationToken);
+
     Task<bool> UpdatePayOSPaymentAsync(
         PayOSPaymentUpdateCommand command,
+        CancellationToken cancellationToken);
+
+    Task<BookingCancellationOutcome> CancelAsync(
+        Guid bookingId,
+        Guid userId,
         CancellationToken cancellationToken);
 }

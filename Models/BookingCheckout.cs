@@ -69,7 +69,8 @@ public sealed record CreateOnlinePaymentLinkCommand(
     Guid BookingId,
     string PropertyName,
     string RoomName,
-    decimal Amount);
+    decimal Amount,
+    DateTime ExpiresAt);
 
 public sealed record OnlinePaymentLink(
     long OrderCode,
@@ -101,3 +102,10 @@ public sealed record PayOSPaymentUpdateCommand(
     string TransactionCode,
     string PaymentStatus,
     string BookingStatus);
+
+public sealed record PayOSPaymentUpdateResult(
+    Guid UserId,
+    string PropertyName,
+    string PaymentStatus,
+    string BookingStatus,
+    bool StateChanged);
