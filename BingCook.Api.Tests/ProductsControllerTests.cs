@@ -2,6 +2,7 @@ using BingCook.Api.Controllers;
 using BingCook.Api.Data;
 using BingCook.Api.Dtos.Products;
 using BingCook.Api.Models;
+using Microsoft.AspNetCore.Mvc;
 using Xunit;
 
 namespace BingCook.Api.Tests;
@@ -28,6 +29,54 @@ public sealed class ProductsControllerTests
     }
 
     [Fact]
+    public async Task GetById_ReturnsMapCoordinates()
+    {
+        var id = Guid.NewGuid();
+        var details = new ProductDetails(
+            new ProductListItem(
+                id,
+                "Hotel",
+                "Ocean Pearl Hotel",
+                null,
+                "Da Nang",
+                "Vo Nguyen Giap",
+                null,
+                680000m,
+                4.7,
+                3,
+                "Active",
+                true,
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                true,
+                16.0544m,
+                108.2022m),
+            Array.Empty<string>(),
+            "",
+            "",
+            "",
+            Array.Empty<ProductRoomOption>(),
+            Array.Empty<ProductRatingBreakdown>(),
+            Array.Empty<ProductReview>());
+        var repository = new CapturingProductRepository { Details = details };
+        var controller = new ProductsController(repository);
+
+        var action = await controller.GetById(
+            id,
+            new ProductSearchRequest(),
+            CancellationToken.None);
+
+        var result = Assert.IsType<OkObjectResult>(action.Result);
+        var response = Assert.IsType<ProductDetailsResponse>(result.Value);
+        Assert.Equal(16.0544m, response.Latitude);
+        Assert.Equal(108.2022m, response.Longitude);
+    }
+
+    [Fact]
     public async Task GetAll_LeavesHotelNameKeywordSearchUntouched()
     {
         var repository = new CapturingProductRepository();
@@ -44,6 +93,7 @@ public sealed class ProductsControllerTests
     private sealed class CapturingProductRepository : IProductRepository
     {
         public ProductSearchCriteria? LastCriteria { get; private set; }
+        public ProductDetails? Details { get; init; }
 
         public Task<IReadOnlyList<ProductListItem>> GetAllAsync(
             ProductSearchCriteria criteria,
@@ -60,7 +110,7 @@ public sealed class ProductsControllerTests
             CancellationToken cancellationToken)
         {
             LastCriteria = criteria;
-            return Task.FromResult<ProductDetails?>(null);
+            return Task.FromResult(Details);
         }
     }
 }

@@ -159,6 +159,8 @@ public sealed class ProductsController : ControllerBase
             $"{summary.City}, {summary.Address}",
             summary.City,
             summary.Address,
+            summary.Latitude,
+            summary.Longitude,
             product.ImageUrls,
             Math.Round(summary.Rating, 1),
             summary.ReviewCount,
