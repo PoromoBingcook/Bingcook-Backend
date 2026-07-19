@@ -104,6 +104,35 @@ public sealed class SqlServerUserRepository : IUserRepository
             : null;
     }
 
+    public async Task<UserAccount?> FindByEmailAsync(
+        string email,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT TOP (1)
+                Id,
+                FullName,
+                Email,
+                Phone,
+                [Password],
+                [Role],
+                CreatedAt
+            FROM dbo.[User]
+            WHERE LOWER(Email) = LOWER(@email);
+            """;
+
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        AddText(command, "@email", email, 100);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? ReadUser(reader)
+            : null;
+    }
+
     private static UserAccount ReadUser(SqlDataReader reader)
     {
         return new UserAccount(

@@ -33,6 +33,7 @@ builder.Services.AddSingleton(_ =>
         ?? throw new InvalidOperationException("DefaultConnection is missing.")));
 
 builder.Services.AddScoped<IUserRepository, SqlServerUserRepository>();
+builder.Services.AddScoped<IEmailVerificationRepository, SqlServerEmailVerificationRepository>();
 builder.Services.AddScoped<IProductRepository, SqlServerProductRepository>();
 builder.Services.AddScoped<IReviewRepository, SqlServerReviewRepository>();
 builder.Services.AddScoped<ISavedPropertyRepository, SqlServerSavedPropertyRepository>();
@@ -42,6 +43,7 @@ builder.Services.AddScoped<INotificationRepository, SqlServerNotificationReposit
 builder.Services.AddScoped<IPasswordHasher, BCryptPasswordHasher>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
 builder.Services.AddScoped<IWelcomeEmailSender, SmtpWelcomeEmailSender>();
+builder.Services.AddScoped<IEmailOtpSender, SmtpEmailOtpSender>();
 builder.Services.AddScoped<IAuthService, AuthService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IBookingService, BookingService>();

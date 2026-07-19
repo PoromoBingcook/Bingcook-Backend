@@ -98,6 +98,36 @@ public sealed class PostgresUserRepository : IUserRepository
         return ReadUser(reader);
     }
 
+    public async Task<UserAccount?> FindByEmailAsync(
+        string email,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT
+                id,
+                fullname,
+                email,
+                phone,
+                password,
+                role,
+                createdat
+            FROM "User"
+            WHERE lower(email) = lower(@email)
+            LIMIT 1;
+            """;
+
+        await using var command = _dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("email", email);
+
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        if (!await reader.ReadAsync(cancellationToken))
+        {
+            return null;
+        }
+
+        return ReadUser(reader);
+    }
+
     private static UserAccount ReadUser(NpgsqlDataReader reader)
     {
         return new UserAccount(

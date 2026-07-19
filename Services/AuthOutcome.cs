@@ -6,7 +6,9 @@ public enum AuthOutcomeStatus
 {
     Success,
     Conflict,
-    Unauthorized
+    Unauthorized,
+    NotFound,
+    Invalid
 }
 
 public sealed record AuthOutcome(
@@ -14,6 +16,9 @@ public sealed record AuthOutcome(
     AuthResponse? Response,
     string? Error)
 {
+    public static AuthOutcome Success() =>
+        new(AuthOutcomeStatus.Success, null, null);
+
     public static AuthOutcome Success(AuthResponse response) =>
         new(AuthOutcomeStatus.Success, response, null);
 
@@ -22,4 +27,10 @@ public sealed record AuthOutcome(
 
     public static AuthOutcome Unauthorized(string error) =>
         new(AuthOutcomeStatus.Unauthorized, null, error);
+
+    public static AuthOutcome NotFound(string error) =>
+        new(AuthOutcomeStatus.NotFound, null, error);
+
+    public static AuthOutcome Invalid(string error) =>
+        new(AuthOutcomeStatus.Invalid, null, error);
 }

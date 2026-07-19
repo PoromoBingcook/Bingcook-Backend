@@ -14,5 +14,14 @@ public interface IAuthService
         string password,
         CancellationToken cancellationToken);
 
+    Task<AuthOutcome> VerifyEmailOtpAsync(
+        string email,
+        string otp,
+        CancellationToken cancellationToken);
+
+    Task<AuthOutcome> ResendEmailOtpAsync(
+        string email,
+        CancellationToken cancellationToken);
+
     Task LogoutAsync(CancellationToken cancellationToken);
 }

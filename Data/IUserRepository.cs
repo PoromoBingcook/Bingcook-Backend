@@ -16,4 +16,8 @@ public interface IUserRepository
     Task<UserAccount?> FindByIdentityAsync(
         string identity,
         CancellationToken cancellationToken);
+
+    Task<UserAccount?> FindByEmailAsync(
+        string email,
+        CancellationToken cancellationToken);
 }

@@ -17,7 +17,7 @@ public sealed class AuthController : ControllerBase
     }
 
     [HttpPost("register")]
-    public async Task<ActionResult<AuthResponse>> Register(
+    public async Task<ActionResult<EmailOtpResponse>> Register(
         RegisterRequest request,
         CancellationToken cancellationToken)
     {
@@ -30,7 +30,8 @@ public sealed class AuthController : ControllerBase
 
         return result.Status switch
         {
-            AuthOutcomeStatus.Success => Ok(result.Response),
+            AuthOutcomeStatus.Success => Ok(new EmailOtpResponse(
+                "A verification OTP has been sent to your email.")),
             AuthOutcomeStatus.Conflict => Conflict(new { message = result.Error }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
@@ -50,6 +51,43 @@ public sealed class AuthController : ControllerBase
         {
             AuthOutcomeStatus.Success => Ok(result.Response),
             AuthOutcomeStatus.Unauthorized => Unauthorized(new { message = result.Error }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
+    [HttpPost("verify-email")]
+    public async Task<ActionResult<AuthResponse>> VerifyEmail(
+        VerifyEmailOtpRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _authService.VerifyEmailOtpAsync(
+            request.Email,
+            request.Otp,
+            cancellationToken);
+
+        return result.Status switch
+        {
+            AuthOutcomeStatus.Success => Ok(result.Response),
+            AuthOutcomeStatus.Conflict => Conflict(new { message = result.Error }),
+            AuthOutcomeStatus.Invalid => BadRequest(new { message = result.Error }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
+    }
+
+    [HttpPost("resend-email-otp")]
+    public async Task<ActionResult<EmailOtpResponse>> ResendEmailOtp(
+        ResendEmailOtpRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _authService.ResendEmailOtpAsync(
+            request.Email,
+            cancellationToken);
+
+        return result.Status switch
+        {
+            AuthOutcomeStatus.Success => Ok(new EmailOtpResponse(
+                "A new OTP has been sent to your email.")),
+            AuthOutcomeStatus.NotFound => NotFound(new { message = result.Error }),
             _ => StatusCode(StatusCodes.Status500InternalServerError)
         };
     }
