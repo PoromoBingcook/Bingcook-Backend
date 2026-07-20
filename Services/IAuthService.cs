@@ -24,4 +24,13 @@ public interface IAuthService
         CancellationToken cancellationToken);
 
     Task LogoutAsync(CancellationToken cancellationToken);
+
+    Task<AuthOutcome> UpdateProfileAsync(
+        Guid userId,
+        string fullName,
+        string? phone,
+        CancellationToken cancellationToken)
+    {
+        return Task.FromResult(AuthOutcome.NotFound("Profile update is unavailable."));
+    }
 }

@@ -2,6 +2,8 @@ using BingCook.Api.Dtos.Auth;
 using BingCook.Api.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
 
 namespace BingCook.Api.Controllers;
 
@@ -98,5 +100,45 @@ public sealed class AuthController : ControllerBase
     {
         await _authService.LogoutAsync(cancellationToken);
         return NoContent();
+    }
+
+    [Authorize]
+    [HttpPut("profile")]
+    public async Task<ActionResult<AuthResponse>> UpdateProfile(
+        UpdateProfileRequest request,
+        CancellationToken cancellationToken)
+    {
+        var userIdText = User.FindFirstValue(JwtRegisteredClaimNames.Sub)
+            ?? User.FindFirstValue(ClaimTypes.NameIdentifier);
+        if (!Guid.TryParse(userIdText, out var userId))
+        {
+            return Unauthorized(new { message = "Invalid access token." });
+        }
+
+        var fullName = request.FullName?.Trim() ?? string.Empty;
+        var phone = string.IsNullOrWhiteSpace(request.Phone) ? null : request.Phone.Trim();
+        if (fullName.Length is < 1 or > 100)
+        {
+            return BadRequest(new { message = "Full name is required and cannot exceed 100 characters." });
+        }
+
+        if (phone is not null &&
+            !System.Text.RegularExpressions.Regex.IsMatch(phone, @"^\+?\d{6,20}$"))
+        {
+            return BadRequest(new { message = "Phone must contain 6 to 20 digits." });
+        }
+
+        var result = await _authService.UpdateProfileAsync(
+            userId,
+            fullName,
+            phone,
+            cancellationToken);
+        return result.Status switch
+        {
+            AuthOutcomeStatus.Success => Ok(result.Response),
+            AuthOutcomeStatus.Conflict => Conflict(new { message = result.Error }),
+            AuthOutcomeStatus.NotFound => NotFound(new { message = result.Error }),
+            _ => StatusCode(StatusCodes.Status500InternalServerError)
+        };
     }
 }

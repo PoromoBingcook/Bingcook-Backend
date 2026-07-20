@@ -14,6 +14,7 @@ public sealed record ProductRoomOption(
     Guid Id,
     string Name,
     int MaxGuests,
+    int AvailableRooms,
     decimal PricePerNight,
     string? ImageUrl,
     IReadOnlyList<string> Features,
@@ -27,4 +28,5 @@ public sealed record ProductReview(
     string Author,
     int Rating,
     DateTime CreatedAt,
-    string? Comment);
+    string? Comment,
+    Guid Id = default);

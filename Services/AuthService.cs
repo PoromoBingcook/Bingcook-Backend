@@ -171,6 +171,37 @@ public sealed class AuthService : IAuthService
         return Task.CompletedTask;
     }
 
+    public async Task<AuthOutcome> UpdateProfileAsync(
+        Guid userId,
+        string fullName,
+        string? phone,
+        CancellationToken cancellationToken)
+    {
+        if (_userRepository is not IEditableUserRepository editableRepository)
+        {
+            return AuthOutcome.NotFound("Profile update is unavailable.");
+        }
+
+        var normalizedFullName = fullName.Trim();
+        var normalizedPhone = string.IsNullOrWhiteSpace(phone) ? null : phone.Trim();
+        if (normalizedPhone is not null && await editableRepository.PhoneExistsForOtherUserAsync(
+            userId,
+            normalizedPhone,
+            cancellationToken))
+        {
+            return AuthOutcome.Conflict("Phone already exists.");
+        }
+
+        var user = await editableRepository.UpdateProfileAsync(
+            userId,
+            normalizedFullName,
+            normalizedPhone,
+            cancellationToken);
+        return user is null
+            ? AuthOutcome.NotFound("User account was not found.")
+            : AuthOutcome.Success(CreateResponse(user));
+    }
+
     private AuthResponse CreateResponse(UserAccount user)
     {
         var token = _jwtTokenService.CreateToken(user);

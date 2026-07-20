@@ -77,6 +77,63 @@ public sealed class ProductsControllerTests
     }
 
     [Fact]
+    public async Task GetById_ReturnsCurrentRoomAvailability()
+    {
+        var id = Guid.NewGuid();
+        var roomId = Guid.NewGuid();
+        var details = new ProductDetails(
+            new ProductListItem(
+                id,
+                "Hotel",
+                "Ocean Pearl Hotel",
+                null,
+                "Da Nang",
+                "Vo Nguyen Giap",
+                null,
+                680000m,
+                4.7,
+                3,
+                "Active",
+                true,
+                true,
+                false,
+                false,
+                true,
+                false,
+                false,
+                true),
+            Array.Empty<string>(),
+            "",
+            "",
+            "",
+            new[]
+            {
+                new ProductRoomOption(
+                    roomId,
+                    "Deluxe Room",
+                    2,
+                    7,
+                    850000m,
+                    null,
+                    new[] { "AC" },
+                    "Instant Booking")
+            },
+            Array.Empty<ProductRatingBreakdown>(),
+            Array.Empty<ProductReview>());
+        var repository = new CapturingProductRepository { Details = details };
+        var controller = new ProductsController(repository);
+
+        var action = await controller.GetById(
+            id,
+            new ProductSearchRequest(),
+            CancellationToken.None);
+
+        var result = Assert.IsType<OkObjectResult>(action.Result);
+        var response = Assert.IsType<ProductDetailsResponse>(result.Value);
+        Assert.Equal(7, Assert.Single(response.Rooms).AvailableRooms);
+    }
+
+    [Fact]
     public async Task GetAll_LeavesHotelNameKeywordSearchUntouched()
     {
         var repository = new CapturingProductRepository();

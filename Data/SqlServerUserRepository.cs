@@ -4,7 +4,7 @@ using Microsoft.Data.SqlClient;
 
 namespace BingCook.Api.Data;
 
-public sealed class SqlServerUserRepository : IUserRepository
+public sealed class SqlServerUserRepository : IUserRepository, IEditableUserRepository
 {
     private readonly SqlConnectionFactory _connectionFactory;
 
@@ -131,6 +131,51 @@ public sealed class SqlServerUserRepository : IUserRepository
         return await reader.ReadAsync(cancellationToken)
             ? ReadUser(reader)
             : null;
+    }
+
+    public async Task<bool> PhoneExistsForOtherUserAsync(
+        Guid userId,
+        string phone,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT CAST(CASE WHEN EXISTS (
+                SELECT 1 FROM dbo.[User]
+                WHERE Id <> @userId AND Phone = @phone
+            ) THEN 1 ELSE 0 END AS bit);
+            """;
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add("@userId", SqlDbType.UniqueIdentifier).Value = userId;
+        AddText(command, "@phone", phone, 20);
+        return await command.ExecuteScalarAsync(cancellationToken) is true;
+    }
+
+    public async Task<UserAccount?> UpdateProfileAsync(
+        Guid userId,
+        string fullName,
+        string? phone,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE dbo.[User]
+            SET FullName = @fullName, Phone = @phone
+            OUTPUT INSERTED.Id, INSERTED.FullName, INSERTED.Email, INSERTED.Phone,
+                   INSERTED.[Password], INSERTED.[Role], INSERTED.CreatedAt
+            WHERE Id = @userId;
+            """;
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        command.Parameters.Add("@userId", SqlDbType.UniqueIdentifier).Value = userId;
+        AddText(command, "@fullName", fullName, 100);
+        var phoneParameter = command.Parameters.Add("@phone", SqlDbType.NVarChar, 20);
+        phoneParameter.Value = phone is null ? DBNull.Value : phone;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadUser(reader) : null;
     }
 
     private static UserAccount ReadUser(SqlDataReader reader)

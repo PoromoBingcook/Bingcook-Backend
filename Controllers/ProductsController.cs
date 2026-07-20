@@ -185,6 +185,7 @@ public sealed class ProductsController : ControllerBase
             room.Id,
             room.Name,
             room.MaxGuests,
+            room.AvailableRooms,
             room.PricePerNight,
             room.ImageUrl,
             room.Features,
@@ -199,7 +200,8 @@ public sealed class ProductsController : ControllerBase
             ToTimeAgo(review.CreatedAt),
             string.IsNullOrWhiteSpace(review.Comment)
                 ? "No written comment."
-                : review.Comment);
+                : review.Comment,
+            review.Id);
     }
 
     private static string ToTimeAgo(DateTime createdAt)

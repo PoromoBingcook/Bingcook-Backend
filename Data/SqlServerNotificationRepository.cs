@@ -18,7 +18,7 @@ public sealed class SqlServerNotificationRepository : INotificationRepository
         CancellationToken cancellationToken)
     {
         const string sql = """
-            SELECT
+            SELECT TOP (5)
                 Id,
                 UserId,
                 Title,
@@ -45,7 +45,9 @@ public sealed class SqlServerNotificationRepository : INotificationRepository
                 ReadNullableString(reader, "Title") ?? string.Empty,
                 ReadNullableString(reader, "Message") ?? string.Empty,
                 reader.GetBoolean(reader.GetOrdinal("IsRead")),
-                reader.GetDateTime(reader.GetOrdinal("CreatedAt"))));
+                DateTime.SpecifyKind(
+                    reader.GetDateTime(reader.GetOrdinal("CreatedAt")),
+                    DateTimeKind.Utc)));
         }
 
         return notifications;

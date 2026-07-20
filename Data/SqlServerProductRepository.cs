@@ -334,6 +334,7 @@ public sealed class SqlServerProductRepository : IProductRepository
                 reader.GetGuid(reader.GetOrdinal("id")),
                 reader.GetString(reader.GetOrdinal("name")),
                 capacity,
+                reader.GetInt32(reader.GetOrdinal("availablerooms")),
                 reader.GetDecimal(reader.GetOrdinal("price")),
                 reader.IsDBNull(reader.GetOrdinal("imageurl"))
                     ? null
@@ -351,6 +352,7 @@ public sealed class SqlServerProductRepository : IProductRepository
     {
         const string sql = """
             SELECT TOP (10)
+                rv.Id AS id,
                 COALESCE(u.FullName, N'BingCook guest') AS author,
                 rv.Rating AS rating,
                 rv.CreatedAt AS createdat,
@@ -377,7 +379,8 @@ public sealed class SqlServerProductRepository : IProductRepository
                 reader.GetDateTime(reader.GetOrdinal("createdat")),
                 reader.IsDBNull(reader.GetOrdinal("comment"))
                     ? null
-                    : reader.GetString(reader.GetOrdinal("comment"))));
+                    : reader.GetString(reader.GetOrdinal("comment")),
+                reader.GetGuid(reader.GetOrdinal("id"))));
         }
 
         return reviews;

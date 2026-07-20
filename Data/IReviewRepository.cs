@@ -16,3 +16,25 @@ public interface IReviewRepository
         string? comment,
         CancellationToken cancellationToken);
 }
+
+public interface IMultiReviewRepository
+{
+    Task<IReadOnlyList<UserReview>> GetMineAllAsync(
+        Guid userId,
+        Guid propertyId,
+        CancellationToken cancellationToken);
+
+    Task<ReviewUpsertResult> CreateAsync(
+        Guid userId,
+        Guid propertyId,
+        int rating,
+        string? comment,
+        CancellationToken cancellationToken);
+
+    Task<UserReview?> UpdateMineAsync(
+        Guid userId,
+        Guid reviewId,
+        int rating,
+        string? comment,
+        CancellationToken cancellationToken);
+}

@@ -290,6 +290,7 @@ public sealed class PostgresProductRepository : IProductRepository
                 reader.GetGuid(reader.GetOrdinal("id")),
                 reader.GetString(reader.GetOrdinal("name")),
                 capacity,
+                reader.GetInt32(reader.GetOrdinal("availablerooms")),
                 reader.GetDecimal(reader.GetOrdinal("price")),
                 reader.IsDBNull(reader.GetOrdinal("imageurl"))
                     ? null
@@ -307,6 +308,7 @@ public sealed class PostgresProductRepository : IProductRepository
     {
         const string sql = """
             SELECT
+                rv.id,
                 COALESCE(u.fullname, 'BingCook guest') AS author,
                 rv.rating,
                 rv.createdat,
@@ -331,7 +333,8 @@ public sealed class PostgresProductRepository : IProductRepository
                 reader.GetDateTime(reader.GetOrdinal("createdat")),
                 reader.IsDBNull(reader.GetOrdinal("comment"))
                     ? null
-                    : reader.GetString(reader.GetOrdinal("comment"))));
+                    : reader.GetString(reader.GetOrdinal("comment")),
+                reader.GetGuid(reader.GetOrdinal("id"))));
         }
 
         return reviews;

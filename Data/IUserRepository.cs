@@ -21,3 +21,17 @@ public interface IUserRepository
         string email,
         CancellationToken cancellationToken);
 }
+
+public interface IEditableUserRepository
+{
+    Task<bool> PhoneExistsForOtherUserAsync(
+        Guid userId,
+        string phone,
+        CancellationToken cancellationToken);
+
+    Task<UserAccount?> UpdateProfileAsync(
+        Guid userId,
+        string fullName,
+        string? phone,
+        CancellationToken cancellationToken);
+}

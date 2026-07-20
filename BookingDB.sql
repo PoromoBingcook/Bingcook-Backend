@@ -230,16 +230,14 @@ BEGIN
 END;
 GO
 
-IF NOT EXISTS (
+IF EXISTS (
     SELECT 1
     FROM sys.indexes
     WHERE name = N'UX_Review_UserId_PropertyId'
       AND object_id = OBJECT_ID(N'dbo.Review')
 )
 BEGIN
-    CREATE UNIQUE INDEX UX_Review_UserId_PropertyId
-        ON dbo.Review(UserId, PropertyId)
-        WHERE UserId IS NOT NULL AND PropertyId IS NOT NULL;
+    DROP INDEX UX_Review_UserId_PropertyId ON dbo.Review;
 END;
 GO
 

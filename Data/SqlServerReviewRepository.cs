@@ -4,7 +4,7 @@ using Microsoft.Data.SqlClient;
 
 namespace BingCook.Api.Data;
 
-public sealed class SqlServerReviewRepository : IReviewRepository
+public sealed class SqlServerReviewRepository : IReviewRepository, IMultiReviewRepository
 {
     private readonly SqlConnectionFactory _connectionFactory;
 
@@ -87,6 +87,79 @@ public sealed class SqlServerReviewRepository : IReviewRepository
         }
 
         return ReviewUpsertResult.Success(ReadReview(reader));
+    }
+
+    public async Task<IReadOnlyList<UserReview>> GetMineAllAsync(
+        Guid userId,
+        Guid propertyId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT Id, UserId, PropertyId, Rating, Comment, CreatedAt
+            FROM dbo.Review
+            WHERE UserId = @userId AND PropertyId = @propertyId
+            ORDER BY CreatedAt DESC;
+            """;
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(sql, connection);
+        AddIds(command, userId, propertyId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var reviews = new List<UserReview>();
+        while (await reader.ReadAsync(cancellationToken)) reviews.Add(ReadReview(reader));
+        return reviews;
+    }
+
+    public async Task<ReviewUpsertResult> CreateAsync(
+        Guid userId,
+        Guid propertyId,
+        int rating,
+        string? comment,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO dbo.Review (Id, UserId, PropertyId, Rating, Comment, CreatedAt)
+            OUTPUT INSERTED.Id, INSERTED.UserId, INSERTED.PropertyId,
+                   INSERTED.Rating, INSERTED.Comment, INSERTED.CreatedAt
+            SELECT @id, @userId, @propertyId, @rating, @comment, SYSUTCDATETIME()
+            WHERE EXISTS (SELECT 1 FROM dbo.Property WHERE Id = @propertyId);
+            """;
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(sql, connection);
+        AddIds(command, userId, propertyId);
+        command.Parameters.Add("@id", SqlDbType.UniqueIdentifier).Value = Guid.NewGuid();
+        command.Parameters.Add("@rating", SqlDbType.Int).Value = rating;
+        command.Parameters.Add("@comment", SqlDbType.NVarChar, 1000).Value = comment is null ? DBNull.Value : comment;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? ReviewUpsertResult.Success(ReadReview(reader))
+            : ReviewUpsertResult.PropertyNotFound();
+    }
+
+    public async Task<UserReview?> UpdateMineAsync(
+        Guid userId,
+        Guid reviewId,
+        int rating,
+        string? comment,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE dbo.Review
+            SET Rating = @rating, Comment = @comment
+            OUTPUT INSERTED.Id, INSERTED.UserId, INSERTED.PropertyId,
+                   INSERTED.Rating, INSERTED.Comment, INSERTED.CreatedAt
+            WHERE Id = @reviewId AND UserId = @userId;
+            """;
+        await using var connection = _connectionFactory.CreateConnection();
+        await connection.OpenAsync(cancellationToken);
+        await using var command = new SqlCommand(sql, connection);
+        command.Parameters.Add("@userId", SqlDbType.UniqueIdentifier).Value = userId;
+        command.Parameters.Add("@reviewId", SqlDbType.UniqueIdentifier).Value = reviewId;
+        command.Parameters.Add("@rating", SqlDbType.Int).Value = rating;
+        command.Parameters.Add("@comment", SqlDbType.NVarChar, 1000).Value = comment is null ? DBNull.Value : comment;
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadReview(reader) : null;
     }
 
     private static void AddIds(SqlCommand command, Guid userId, Guid propertyId)

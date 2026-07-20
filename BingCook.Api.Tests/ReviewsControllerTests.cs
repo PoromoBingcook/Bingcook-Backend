@@ -153,7 +153,38 @@ public sealed class ReviewsControllerTests
     }
 
     [Fact]
-    public void ReviewPersistence_IsRegisteredAndConstrainedForSupportedProviders()
+    public async Task Create_AddsAnotherReviewForTheCurrentUser()
+    {
+        var repository = new FakeReviewRepository();
+        var controller = CreateController(repository);
+
+        var action = await controller.Create(
+            PropertyId,
+            new UpsertReviewRequest(5, " Another stay "),
+            CancellationToken.None);
+
+        var created = Assert.IsType<CreatedAtActionResult>(action.Result);
+        var response = Assert.IsType<ReviewResponse>(created.Value);
+        Assert.Equal(5, response.Rating);
+        Assert.Equal("Another stay", repository.LastComment);
+    }
+
+    [Fact]
+    public async Task UpdateMine_ReturnsNotFoundWhenReviewIsNotOwnedByUser()
+    {
+        var repository = new FakeReviewRepository { CanUpdate = false };
+        var controller = CreateController(repository);
+
+        var action = await controller.UpdateMine(
+            ReviewId,
+            new UpsertReviewRequest(4, "Changed"),
+            CancellationToken.None);
+
+        Assert.IsType<NotFoundObjectResult>(action.Result);
+    }
+
+    [Fact]
+    public void ReviewPersistence_AllowsMultipleReviewsForSupportedProviders()
     {
         var root = FindRepositoryRoot();
         var program = File.ReadAllText(Path.Combine(root, "Program.cs"));
@@ -166,8 +197,8 @@ public sealed class ReviewsControllerTests
         Assert.Contains(
             "AddScoped<IReviewRepository, SqlServerReviewRepository>()",
             program);
-        Assert.Contains("UX_Review_UserId_PropertyId", sqlServerSchema);
-        Assert.Contains("ux_review_userid_propertyid", postgresSchema);
+        Assert.Contains("DROP INDEX UX_Review_UserId_PropertyId", sqlServerSchema);
+        Assert.Contains("DROP INDEX IF EXISTS ux_review_userid_propertyid", postgresSchema);
     }
 
     private static ReviewsController CreateController(
@@ -216,11 +247,12 @@ public sealed class ReviewsControllerTests
         throw new DirectoryNotFoundException("Unable to locate backend repository root.");
     }
 
-    private sealed class FakeReviewRepository : IReviewRepository
+    private sealed class FakeReviewRepository : IReviewRepository, IMultiReviewRepository
     {
         public UserReview? Existing { get; init; }
         public UserReview? Saved { get; init; }
         public bool PropertyExists { get; init; } = true;
+        public bool CanUpdate { get; init; } = true;
         public Guid? LastUserId { get; private set; }
         public Guid? LastPropertyId { get; private set; }
         public int? LastRating { get; private set; }
@@ -252,6 +284,39 @@ public sealed class ReviewsControllerTests
                     ? ReviewUpsertResult.Success(
                         Saved ?? CreateReview(rating, comment))
                     : ReviewUpsertResult.PropertyNotFound());
+        }
+
+        public Task<IReadOnlyList<UserReview>> GetMineAllAsync(
+            Guid userId,
+            Guid propertyId,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<IReadOnlyList<UserReview>>(
+                Existing is null ? [] : [Existing]);
+        }
+
+        public Task<ReviewUpsertResult> CreateAsync(
+            Guid userId,
+            Guid propertyId,
+            int rating,
+            string? comment,
+            CancellationToken cancellationToken)
+        {
+            return UpsertAsync(userId, propertyId, rating, comment, cancellationToken);
+        }
+
+        public Task<UserReview?> UpdateMineAsync(
+            Guid userId,
+            Guid reviewId,
+            int rating,
+            string? comment,
+            CancellationToken cancellationToken)
+        {
+            LastUserId = userId;
+            LastRating = rating;
+            LastComment = comment;
+            return Task.FromResult<UserReview?>(
+                CanUpdate ? Saved ?? CreateReview(rating, comment) : null);
         }
     }
 }

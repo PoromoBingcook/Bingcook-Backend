@@ -3,7 +3,7 @@ using Npgsql;
 
 namespace BingCook.Api.Data;
 
-public sealed class PostgresUserRepository : IUserRepository
+public sealed class PostgresUserRepository : IUserRepository, IEditableUserRepository
 {
     private readonly NpgsqlDataSource _dataSource;
 
@@ -126,6 +126,43 @@ public sealed class PostgresUserRepository : IUserRepository
         }
 
         return ReadUser(reader);
+    }
+
+    public async Task<bool> PhoneExistsForOtherUserAsync(
+        Guid userId,
+        string phone,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT EXISTS (
+                SELECT 1 FROM "User"
+                WHERE id <> @userId AND phone = @phone
+            );
+            """;
+        await using var command = _dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("userId", userId);
+        command.Parameters.AddWithValue("phone", phone);
+        return await command.ExecuteScalarAsync(cancellationToken) is true;
+    }
+
+    public async Task<UserAccount?> UpdateProfileAsync(
+        Guid userId,
+        string fullName,
+        string? phone,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE "User"
+            SET fullname = @fullName, phone = @phone
+            WHERE id = @userId
+            RETURNING id, fullname, email, phone, password, role, createdat;
+            """;
+        await using var command = _dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("userId", userId);
+        command.Parameters.AddWithValue("fullName", fullName);
+        command.Parameters.AddWithValue("phone", phone is null ? DBNull.Value : phone);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadUser(reader) : null;
     }
 
     private static UserAccount ReadUser(NpgsqlDataReader reader)

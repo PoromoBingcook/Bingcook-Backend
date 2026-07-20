@@ -4,7 +4,7 @@ using NpgsqlTypes;
 
 namespace BingCook.Api.Data;
 
-public sealed class PostgresReviewRepository : IReviewRepository
+public sealed class PostgresReviewRepository : IReviewRepository, IMultiReviewRepository
 {
     private readonly NpgsqlDataSource _dataSource;
 
@@ -66,6 +66,71 @@ public sealed class PostgresReviewRepository : IReviewRepository
         }
 
         return ReviewUpsertResult.Success(ReadReview(reader));
+    }
+
+    public async Task<IReadOnlyList<UserReview>> GetMineAllAsync(
+        Guid userId,
+        Guid propertyId,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            SELECT id, userid, propertyid, rating, comment, createdat
+            FROM review
+            WHERE userid = @userId AND propertyid = @propertyId
+            ORDER BY createdat DESC;
+            """;
+        await using var command = _dataSource.CreateCommand(sql);
+        AddIds(command, userId, propertyId);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        var reviews = new List<UserReview>();
+        while (await reader.ReadAsync(cancellationToken)) reviews.Add(ReadReview(reader));
+        return reviews;
+    }
+
+    public async Task<ReviewUpsertResult> CreateAsync(
+        Guid userId,
+        Guid propertyId,
+        int rating,
+        string? comment,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            INSERT INTO review (id, userid, propertyid, rating, comment, createdat)
+            SELECT @id, @userId, @propertyId, @rating, @comment, CURRENT_TIMESTAMP
+            WHERE EXISTS (SELECT 1 FROM property WHERE id = @propertyId)
+            RETURNING id, userid, propertyid, rating, comment, createdat;
+            """;
+        await using var command = _dataSource.CreateCommand(sql);
+        AddIds(command, userId, propertyId);
+        command.Parameters.AddWithValue("id", NpgsqlDbType.Uuid, Guid.NewGuid());
+        command.Parameters.AddWithValue("rating", NpgsqlDbType.Integer, rating);
+        command.Parameters.AddWithValue("comment", NpgsqlDbType.Text, comment is null ? DBNull.Value : comment);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken)
+            ? ReviewUpsertResult.Success(ReadReview(reader))
+            : ReviewUpsertResult.PropertyNotFound();
+    }
+
+    public async Task<UserReview?> UpdateMineAsync(
+        Guid userId,
+        Guid reviewId,
+        int rating,
+        string? comment,
+        CancellationToken cancellationToken)
+    {
+        const string sql = """
+            UPDATE review
+            SET rating = @rating, comment = @comment
+            WHERE id = @reviewId AND userid = @userId
+            RETURNING id, userid, propertyid, rating, comment, createdat;
+            """;
+        await using var command = _dataSource.CreateCommand(sql);
+        command.Parameters.AddWithValue("userId", NpgsqlDbType.Uuid, userId);
+        command.Parameters.AddWithValue("reviewId", NpgsqlDbType.Uuid, reviewId);
+        command.Parameters.AddWithValue("rating", NpgsqlDbType.Integer, rating);
+        command.Parameters.AddWithValue("comment", NpgsqlDbType.Text, comment is null ? DBNull.Value : comment);
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        return await reader.ReadAsync(cancellationToken) ? ReadReview(reader) : null;
     }
 
     private static void AddIds(NpgsqlCommand command, Guid userId, Guid propertyId)

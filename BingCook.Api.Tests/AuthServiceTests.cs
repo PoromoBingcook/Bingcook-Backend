@@ -212,6 +212,27 @@ public sealed class AuthServiceTests
         Assert.Equal(AuthOutcomeStatus.NotFound, result.Status);
     }
 
+    [Fact]
+    public async Task UpdateProfileAsync_UpdatesOwnedAccountAndReturnsNewSession()
+    {
+        var userRepository = new FakeUserRepository(CreateUser());
+        var service = CreateService(
+            userRepository,
+            new FakeEmailVerificationRepository(),
+            new FakeWelcomeEmailSender(),
+            new FakeEmailOtpSender());
+
+        var result = await service.UpdateProfileAsync(
+            CreateUser().Id,
+            " Jane Updated ",
+            "0901234567",
+            CancellationToken.None);
+
+        Assert.Equal(AuthOutcomeStatus.Success, result.Status);
+        Assert.Equal("Jane Updated", result.Response?.User.FullName);
+        Assert.Equal("0901234567", result.Response?.User.Phone);
+    }
+
     private static AuthService CreateService(
         IUserRepository userRepository,
         IEmailVerificationRepository emailVerificationRepository,
@@ -241,7 +262,7 @@ public sealed class AuthServiceTests
             new DateTime(2026, 6, 16, 0, 0, 0, DateTimeKind.Utc));
     }
 
-    private sealed class FakeUserRepository : IUserRepository
+    private sealed class FakeUserRepository : IUserRepository, IEditableUserRepository
     {
         private readonly UserAccount _createdUser;
 
@@ -288,6 +309,27 @@ public sealed class AuthServiceTests
             return Task.FromResult(ReturnNullForFindByEmail
                 ? null
                 : _createdUser);
+        }
+
+        public Task<bool> PhoneExistsForOtherUserAsync(
+            Guid userId,
+            string phone,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult(false);
+        }
+
+        public Task<UserAccount?> UpdateProfileAsync(
+            Guid userId,
+            string fullName,
+            string? phone,
+            CancellationToken cancellationToken)
+        {
+            return Task.FromResult<UserAccount?>(_createdUser with
+            {
+                FullName = fullName,
+                Phone = phone,
+            });
         }
     }
 
