@@ -1,6 +1,7 @@
 ﻿using System.Data;
 using System.Text;
 using BingCook.Api.Models;
+using BingCook.Api.Services;
 using Microsoft.Data.SqlClient;
 
 namespace BingCook.Api.Data;
@@ -130,9 +131,14 @@ public sealed class SqlServerProductRepository : IProductRepository
             return null;
         }
 
-        var images = await GetImageUrlsAsync(id, cancellationToken);
-        var rooms = await GetAvailableRoomsAsync(id, criteria, cancellationToken);
-        var reviews = await GetReviewsAsync(id, cancellationToken);
+        var imagesTask = GetImageUrlsAsync(id, cancellationToken);
+        var roomsTask = GetAvailableRoomsAsync(id, criteria, cancellationToken);
+        var reviewsTask = GetReviewsAsync(id, cancellationToken);
+        await Task.WhenAll(imagesTask, roomsTask, reviewsTask);
+
+        var images = await imagesTask;
+        var rooms = await roomsTask;
+        var reviews = await reviewsTask;
         var distribution = BuildRatingDistribution(reviews);
 
         return new ProductDetails(
@@ -264,7 +270,8 @@ public sealed class SqlServerProductRepository : IProductRepository
         var images = new List<string>();
         while (await reader.ReadAsync(cancellationToken))
         {
-            images.Add(reader.GetString(reader.GetOrdinal("imageurl")));
+            var imageUrl = reader.GetString(reader.GetOrdinal("imageurl"));
+            images.Add(ImageUrlOptimizer.ForWidth(imageUrl, 1600) ?? imageUrl);
         }
 
         return images;
@@ -338,7 +345,9 @@ public sealed class SqlServerProductRepository : IProductRepository
                 reader.GetDecimal(reader.GetOrdinal("price")),
                 reader.IsDBNull(reader.GetOrdinal("imageurl"))
                     ? null
-                    : reader.GetString(reader.GetOrdinal("imageurl")),
+                    : ImageUrlOptimizer.ForWidth(
+                        reader.GetString(reader.GetOrdinal("imageurl")),
+                        800),
                 BuildRoomFeatures(capacity),
                 "Instant Booking"));
         }
@@ -403,7 +412,9 @@ public sealed class SqlServerProductRepository : IProductRepository
                 : reader.GetString(reader.GetOrdinal("address")),
             reader.IsDBNull(reader.GetOrdinal("imageurl"))
                 ? null
-                : reader.GetString(reader.GetOrdinal("imageurl")),
+                : ImageUrlOptimizer.ForWidth(
+                    reader.GetString(reader.GetOrdinal("imageurl")),
+                    480),
             reader.GetDecimal(reader.GetOrdinal("pricepernight")),
             reader.GetDouble(reader.GetOrdinal("rating")),
             reader.GetInt32(reader.GetOrdinal("reviewcount")),

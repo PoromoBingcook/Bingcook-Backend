@@ -105,12 +105,16 @@ public sealed class UserReservationsController : ControllerBase
                 reader.GetGuid(reader.GetOrdinal("BookingId")),
                 reader.GetGuid(reader.GetOrdinal("PropertyId")),
                 reader.GetString(reader.GetOrdinal("PropertyName")),
-                ReadNullableString(reader, "PropertyImageUrl"),
+                ImageUrlOptimizer.ForWidth(
+                    ReadNullableString(reader, "PropertyImageUrl"),
+                    480),
                 ReadNullableDouble(reader, "Latitude"),
                 ReadNullableDouble(reader, "Longitude"),
                 reader.GetGuid(reader.GetOrdinal("RoomId")),
                 reader.GetString(reader.GetOrdinal("RoomName")),
-                ReadNullableString(reader, "RoomImageUrl"),
+                ImageUrlOptimizer.ForWidth(
+                    ReadNullableString(reader, "RoomImageUrl"),
+                    480),
                 DateOnly.FromDateTime(reader.GetDateTime(reader.GetOrdinal("CheckIn"))),
                 DateOnly.FromDateTime(reader.GetDateTime(reader.GetOrdinal("CheckOut"))),
                 reader.GetInt32(reader.GetOrdinal("Adults")),
